@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ANDI Next (TypeScript Rewrite) — Interactive Test Page</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --border: #cbd5e1;
+      --primary: #2563eb;
+      --error: #dc2626;
+      --error-bg: #fef2f2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 2rem;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      display: grid;
+      gap: 1.5rem;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+    }
+    .launcher-bar {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      align-items: center;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 1rem 1.25rem;
+      border-radius: 10px;
+    }
+    button {
+      padding: 0.6rem 1rem;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--primary);
+      color: #fff;
+    }
+    button.secondary {
+      background: #0f172a;
+    }
+    .form-row {
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+    input[type="text"], input[type="email"] {
+      width: 100%;
+      max-width: 360px;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .low-contrast-text {
+      color: #94a3b8;
+      background: #f1f5f9;
+      padding: 0.5rem;
+      border-radius: 6px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.5rem;
+    }
+    td {
+      border: 1px solid var(--border);
+      padding: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <div class="launcher-bar">
+      <strong>ANDI Next Controls:</strong>
+      <button type="button" onclick="window.AndiNext.launch('f')">Launch fANDI (Focusable)</button>
+      <button type="button" class="secondary" onclick="window.AndiNext.runAll()">Launch ALL Mode (Run All Tests)</button>
+    </div>
+
+    <section class="card">
+      <h1>1. Form Controls &amp; Persistent DOM Notes Test</h1>
+      <p>Hover or focus any control below while ANDI Next is open. Try adding or editing a Note in the middle panel!</p>
+
+      <form novalidate>
+        <!-- Accessible Input -->
+        <div class="form-row">
+          <label for="firstName">First Name *</label>
+          <input type="text" id="firstName" name="firstName" required aria-required="true" />
+        </div>
+
+        <!-- Intentionally Inaccessible Input with Pre-persisted DOM Note -->
+        <div class="form-row">
+          <div>Phone Number (visual text only, no &lt;label&gt; association):</div>
+          <input
+            type="text"
+            id="unlabelledPhone"
+            name="phone"
+            data-andi-note="Missing programmatic <label for='unlabelledPhone'>; screen readers only announce 'textbox'."
+            data-andi-note-severity="danger"
+            data-andi-note-updated="2026-11-04T21:20:00.000Z"
+          />
+        </div>
+
+        <!-- Broken aria-labelledby & positive tabindex -->
+        <div class="form-row">
+          <label for="deptInput">Department</label>
+          <input
+            type="text"
+            id="deptInput"
+            tabindex="5"
+            aria-labelledby="nonExistentId"
+          />
+        </div>
+
+        <button type="submit">Submit Registration</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <!-- Intentional Heading Level Skip (H1 -> H4) for sANDI / ALL mode -->
+      <h4>2. Multi-Module Test Fixtures (Graphics, Links, Contrast, Tables)</h4>
+
+      <!-- Vague Link (lANDI) -->
+      <p>For more information on Section 508 compliance, <a href="https://www.ssa.gov/accessibility">click here</a>.</p>
+
+      <!-- Low Contrast Text (cANDI) -->
+      <p class="low-contrast-text">This text intentionally has low color contrast (#94a3b8 on #f1f5f9) to trigger cANDI in ALL mode.</p>
+
+      <!-- Image without alt (gANDI) -->
+      <p>
+        Unlabelled SVG Graphic:
+        <svg width="48" height="48" role="img" style="vertical-align: middle; background: #e2e8f0; border-radius: 6px;">
+          <circle cx="24" cy="24" r="16" fill="#2563eb" />
+        </svg>
+      </p>
+
+      <!-- Table without <th> or <caption> (tANDI) -->
+      <table>
+        <tr>
+          <td>Employee ID</td>
+          <td>Status</td>
+        </tr>
+        <tr>
+          <td>#1042</td>
+          <td>Active</td>
+        </tr>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    window.ANDI_INITIAL_MODE = 'all';
+  </script>
+  <script src="./dist/andi-next.js"></script>
+</body>
+</html>
+

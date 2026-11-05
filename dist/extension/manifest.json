@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ANDI Next \u2014 Accessible Name & Description Inspector",
+  "version": "30.0.0",
+  "description": "Zero-dependency TypeScript rewrite of SSA ANDI with 'All' mode and persistent DOM Defect Notes.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "action": {
+    "default_title": "Launch ANDI Next"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

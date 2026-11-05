@@ -1,0 +1,1 @@
+javascript:(function(){var s=document.createElement('script');s.src='dist/andi-next.js';document.head.appendChild(s);})();
