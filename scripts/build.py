@@ -199,8 +199,9 @@ def main() -> None:
 
     bookmarklet = (
         "javascript:(function(){"
+        "window.ANDI_INITIAL_MODE='all';"
         "var s=document.createElement('script');"
-        "s.src='dist/andi-next.js';"
+        "s.src='https://cdn.jsdelivr.net/gh/devarshipant/andi-next@feat/andi-updates/dist/andi-next.js';"
         "document.head.appendChild(s);"
         "})();"
     )
