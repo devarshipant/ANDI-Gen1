@@ -247,9 +247,11 @@ def main() -> None:
     # Copy into extension folder
     (EXT_DIR / "andi-gen1.js").write_text(full_bundle, encoding="utf-8")
 
-    # Generate required Chrome Web Store icons (16x16, 48x48, 128x128)
+    # Preserve custom Chrome Web Store icons if present; otherwise generate fallback PNGs
     for sz in (16, 48, 128):
-        (ICONS_DIR / f"icon{sz}.png").write_bytes(make_solid_png(sz, (29, 78, 216)))
+        icon_file = ICONS_DIR / f"icon{sz}.png"
+        if not icon_file.exists():
+            icon_file.write_bytes(make_solid_png(sz, (29, 78, 216)))
 
     manifest = {
         "manifest_version": 3,
