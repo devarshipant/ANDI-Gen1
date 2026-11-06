@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ANDI Next (TypeScript Rewrite) — Interactive Test Page</title>
+  <title>ANDI-Gen1 (TypeScript Rewrite) — Interactive Test Suite</title>
   <style>
     :root {
       --bg: #f8fafc;
@@ -24,7 +24,7 @@
       color: var(--text);
     }
     .container {
-      max-width: 900px;
+      max-width: 960px;
       margin: 0 auto;
       display: grid;
       gap: 1.5rem;
@@ -38,7 +38,7 @@
     }
     .launcher-bar {
       display: flex;
-      gap: 0.75rem;
+      gap: 0.65rem;
       flex-wrap: wrap;
       align-items: center;
       background: #eff6ff;
@@ -47,7 +47,7 @@
       border-radius: 10px;
     }
     button {
-      padding: 0.6rem 1rem;
+      padding: 0.55rem 0.9rem;
       border-radius: 8px;
       border: 1px solid transparent;
       font-weight: 600;
@@ -88,26 +88,42 @@
       border: 1px solid var(--border);
       padding: 0.5rem;
     }
+    iframe {
+      width: 100%;
+      height: 185px;
+      border: 2px solid #94a3b8;
+      border-radius: 8px;
+      background: #fff;
+    }
   </style>
 </head>
 <body>
   <main class="container">
     <div class="launcher-bar">
-      <strong>ANDI Next Controls:</strong>
-      <button type="button" onclick="window.AndiNext.launch('f')">Launch fANDI (Focusable)</button>
-      <button type="button" class="secondary" onclick="window.AndiNext.runAll()">Launch ALL Mode (Run All Tests)</button>
+      <strong>ANDI-Gen1 Controls:</strong>
+      <button type="button" onclick="window.AndiGen1.launch('f')">Launch fANDI</button>
+      <button type="button" class="secondary" onclick="window.AndiGen1.runAll()">Launch ALL Mode (Last in Droplist)</button>
+      <button type="button" onclick="window.AndiGen1.setDock('right')">Pin Right</button>
+      <button type="button" onclick="window.AndiGen1.setDock('left')">Pin Left</button>
+      <button type="button" onclick="window.AndiGen1.setDock('top')">Pin Top</button>
+      <button type="button" onclick="window.AndiGen1.setTheme('light')">Light Theme</button>
+      <button type="button" class="secondary" onclick="window.AndiGen1.setTheme('dark')">Dark Theme</button>
       <span style="margin-left:auto;">
-        Drag to Bookmarks Bar:
+        Favelet:
         <a
-          href="javascript:(function(){window.ANDI_INITIAL_MODE='all';var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/gh/devarshipant/andi-next@feat/andi-updates/dist/andi-next.js';document.head.appendChild(s);})();"
+          href="javascript:(function(){window.ANDI_INITIAL_MODE='f';var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@feat/andi-updates/dist/andi-gen1.js';document.head.appendChild(s);})();"
           style="display:inline-block;padding:0.45rem 0.85rem;background:#0f172a;color:#38bdf8;font-weight:800;border-radius:6px;text-decoration:none;border:2px solid #38bdf8;"
-        >ANDI Next (ALL)</a>
+        >ANDI-Gen1</a>
       </span>
     </div>
 
     <section class="card">
-      <h1>1. Form Controls &amp; Persistent DOM Notes Test</h1>
-      <p>Hover or focus any control below while ANDI Next is open. Try adding or editing a Note in the middle panel!</p>
+      <h1>1. Form Controls, Fly-In LocalStorage Notes &amp; Node Screenshots</h1>
+      <p>
+        Select any element below, click <strong>📝 Note</strong> in the ANDI-Gen1 toolbar to open the
+        <strong>on-demand Fly-In Note Drawer</strong> (saved in <code>localStorage</code>), and click
+        <strong>📸 Capture Node + Note Screenshot</strong> to burn your note onto a PNG snapshot of the DOM node!
+      </p>
 
       <form novalidate>
         <!-- Accessible Input -->
@@ -116,7 +132,7 @@
           <input type="text" id="firstName" name="firstName" required aria-required="true" />
         </div>
 
-        <!-- Intentionally Inaccessible Input with Pre-persisted DOM Note -->
+        <!-- Intentionally Inaccessible Input -->
         <div class="form-row">
           <div>Phone Number (visual text only, no &lt;label&gt; association):</div>
           <input
@@ -125,7 +141,7 @@
             name="phone"
             data-andi-note="Missing programmatic <label for='unlabelledPhone'>; screen readers only announce 'textbox'."
             data-andi-note-severity="danger"
-            data-andi-note-updated="2026-11-04T21:20:00.000Z"
+            data-andi-note-updated="2026-11-05T19:00:00.000Z"
           />
         </div>
 
@@ -145,8 +161,21 @@
     </section>
 
     <section class="card">
-      <!-- Intentional Heading Level Skip (H1 -> H4) for sANDI / ALL mode -->
-      <h4>2. Multi-Module Test Fixtures (Graphics, Links, Contrast, Tables)</h4>
+      <h2>2. Iframe Detection &amp; Step-In / Step-Out Test Fixture</h2>
+      <p>
+        Use the <strong>Iframe Step-In</strong> dropdown in the ANDI-Gen1 toolbar (or inspect the <code>&lt;iframe&gt;</code> below and click
+        <strong>Step Into Iframe ⤵</strong>) to inspect elements inside the embedded document.
+      </p>
+      <!-- Intentionally missing title attribute to trigger iANDI alert as well -->
+      <iframe
+        id="paymentEmbeddedFrame"
+        srcdoc="<!DOCTYPE html><html lang='en'><head><style>body{font-family:system-ui,sans-serif;padding:12px;margin:0;background:#f8fafc;} .row{margin-bottom:8px;}</style></head><body><h3 style='margin-top:0;'>Embedded Payment Widget (Inside Iframe)</h3><div class='row'><span>Card Number (unlabelled input inside iframe):</span> <input type='text' id='iframeCardInput' placeholder='0000 0000 0000 0000' /></div><button type='button' id='iframePayBtn'>Authorize Payment</button> <a href='#'>here</a></body></html>"
+      ></iframe>
+    </section>
+
+    <section class="card">
+      <!-- Intentional Heading Level Skip (H2 -> H4) for sANDI / ALL mode -->
+      <h4>3. Multi-Module Test Fixtures (Graphics, Links, Contrast, Tables)</h4>
 
       <!-- Vague Link (lANDI) -->
       <p>For more information on Section 508 compliance, <a href="https://www.ssa.gov/accessibility">click here</a>.</p>
@@ -179,7 +208,6 @@
   <script>
     window.ANDI_INITIAL_MODE = 'all';
   </script>
-  <script src="./dist/andi-next.js"></script>
+  <script src="./dist/andi-gen1.js"></script>
 </body>
 </html>
-

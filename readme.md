@@ -1,68 +1,57 @@
-# ANDI Next - Accessible Name and Description Inspector (TypeScript Edition)
+# ANDI-Gen1 (Accessible Name & Description Inspector)
 
-> **Derivative Work & Attribution Notice (Apache License 2.0)**:  
-> **ANDI Next** (`devarshipant/andi-next`) is an independent, modified derivative work based on [ANDI (Accessible Name & Description Inspector)](https://github.com/SSAgov/ANDI), originally created and maintained by the **Accessible Solutions Branch at the U.S. Social Security Administration (SSA)**. Licensed under the [Apache License, Version 2.0](./LICENSE.md). This fork is not affiliated with or endorsed by the SSA.
+## What is ANDI?
+ANDI (Accessible Name & Description Inspector) is an open-source accessibility testing tool originally created by the Accessible Solutions Branch of the Social Security Administration (SSA). It is a "favelet" or "bookmarklet" used to inspect web content for accessibility compliance (Section 508 and WCAG 2.1).
 
-ANDI is a web accessibility testing tool.
+## What is ANDI-Gen1?
+**ANDI-Gen1** builds upon the original SSA ANDI and the **ANDI Next** TypeScript rewrite. Every module in both [`src/`](./src/) and [`andi/`](./andi/) is written strictly in zero-dependency **TypeScript** (`fandi.ts`, `gandi.ts`, `landi.ts`, `tandi.ts`, `sandi.ts`, `candi.ts`, `handi.ts`, `iandi.ts`, `andi.ts`, and `help/help.ts`), compiled into a self-contained Shadow DOM bundle ([`dist/andi-gen1.js`](./dist/andi-gen1.js)).
 
-## What does ANDI do?
-1. Automatically detects accessibility issues
-2. Suggests ways to improve accessibility
-3. Reveals what a screen reader should say for interactive elements
-4. **(New in ANDI Next)** Runs all inspection modules at once via **`ALL` mode** and lets testers attach **persistent DOM notes** directly to inaccessible controls for instant **Defect Report** export
+### What Did ANDI-Gen1 Add?
+1. **On-Demand Fly-In Note Drawer (`localStorage`)**: Saves tester defect notes per DOM node in `window.localStorage` (`ANDI_GEN1_NOTES_STORE_V1`) and on the element's `data-andi-note*` attributes via a slide-out drawer (`📝 Note`), freeing up horizontal space in the main inspection panel.
+2. **Iframe Detection & Step-In / Step-Out**: Detects all `<iframe>` elements on the page and lets testers **Step Into (`⤵`)** and **Step Out (`⤴`)** of same-origin iframes directly from the toolbar or the element header.
+3. **Streamlined 2-Column Main Panel Layout**: Moves the **Page Accessibility Alerts** panel immediately after the **Screen Reader Spoken & Elements** panel.
+4. **`ALL` Mode Placed Last in the Mode Droplist**: Orders the module selector as `f`, `g`, `l`, `t`, `s`, `c`, `h`, `i`, and **`ALL — Run All Accessibility Tests`** as the final item in the droplist.
+5. **Built-In CSP Detection & Resolution (`🛡️ CSP`)**: Detects active Content Security Policy `<meta>` tags and runtime `securitypolicyviolation` events, adopts Constructable Stylesheets (`adoptedStyleSheets`) to avoid inline style blocks, and offers one-click Meta CSP resolution for testing.
+6. **Alert-Driven Defect Reports with On-Demand Notes**: Generates Defect Reports strictly from elements that have **Page Accessibility Alerts**, enriched with any on-demand Fly-In Notes and DOM node screenshots.
+7. **5-Way Pinning / Docking (Like DOM Explorer)**: Pin ANDI-Gen1 to **Top**, **Bottom**, **Left Explorer**, **Right Explorer**, or **DOM Inline** (floating next to the inspected element).
+8. **User Themes for Dark & Light Layouts**: Switch between **🌙 Dark** and **☀️ Light** themes at any time, automatically persisted in `localStorage`.
+9. **DOM Node + Tester Note Screenshots**: Capture a high-DPI PNG snapshot of the selected DOM node with the tester's note burned onto the image, preview it inside the Fly-In Note drawer, and download it as part of the HTML/Markdown/CSV Defect Report.
 
-## What problem does ANDI solve?
+*(For a complete technical breakdown of all updates, see [rules.md](./rules.md).)*
 
-For many web developers, accessibility is an unfamiliar and complex territory and therefore often neglected. ANDI bridges the gap between developers and end users by revealing where accessibility issues occur on the page. To accomplish this, it analyzes the HTML of the web page being tested and extracts accessibility related markup.
+---
 
-#### Developers like ANDI because:
-* It's easy to install, quick to run, and helps satisfy accessibility requirements.
+## How do I install or run ANDI-Gen1?
 
-#### Testers like ANDI because:
-* It saves them time by automatically finding potential defects, offering solutions, and recording persistent control notes directly into a downloadable Defect Report.
+### Option 1: Bookmarklet (Favelet)
+Create a new bookmark in your browser's Bookmarks Bar named **ANDI-Gen1** and paste the following URL:
 
-#### End Users Ultimately Benefit:
-* When web pages are accessible, everyone can efficiently perceive, understand, navigate, and interact with the Web.
+```javascript
+javascript:(function(){window.ANDI_INITIAL_MODE='f';var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@feat/andi-updates/dist/andi-gen1.js';document.head.appendChild(s);})();
+```
 
-## What did ANDI Next update?
+### Option 2: Local Interactive Test Page (`demo.html`)
+```bash
+python3 -m http.server 8090
+```
+Then open `http://localhost:8090/demo.html` in your browser.
 
-**ANDI Next** (`src/` and `dist/`) introduces a modern, zero-dependency **TypeScript** rewrite alongside the original codebase (`andi/`):
+### Option 3: Chrome / Edge Unpacked Extension (Bypasses All Host CSPs)
+1. Open `chrome://extensions` (or `edge://extensions`).
+2. Enable **Developer mode**.
+3. Click **Load unpacked** and select the [`dist/extension/`](./dist/extension/) directory.
 
-* **Zero-Dependency TypeScript Engine**: Rewritten in strict TypeScript (`ES2022`) using native browser DOM APIs—removing the external Google CDN jQuery dependency and legacy IE7/IE8 shims.
-* **Faster Single-Pass DOM Analysis**: Replaces repeated $O(N^2)$ DOM queries and layout thrashing with a single-pass `TreeWalker`, `WeakMap` computed-style caching, $O(1)$ `Map`/`Set` lookups for duplicate `id` and `<label for>` checks, and $O(1)$ delegated event listeners.
-* **Hardened Security & Shadow DOM Isolation**: Renders the inspector UI inside an isolated **Shadow DOM** host (`#andi-next-host`) without reparenting `<body>`, and constructs all UI nodes via `document.createElement` and `textContent` (zero untrusted `innerHTML` injection).
-* **`ALL` Mode (Run All Tests at Once)**: Adds an **`ALL`** mode (`window.AndiNext.runAll()`) that executes all 8 accessibility inspection suites (`fANDI`, `gANDI`, `lANDI`, `tANDI`, `sANDI`, `cANDI`, `hANDI`, `iANDI`) in a single unified pass.
-* **Persistent DOM Control Notes & Defect Reports**: Allows testers to attach notes and severity ratings directly onto live DOM elements (`data-andi-note`, `data-andi-note-severity`, `data-andi-note-updated`) and export a complete **Defect Report** in **Markdown (`.md`)**, **JSON (`.json`)**, or **CSV (`.csv`)**.
+---
 
-See [rules.md](./rules.md) for the complete technical breakdown of updates and contributor guidelines.
+## How do I build ANDI-Gen1 from TypeScript source?
+Run the zero-dependency build script:
+```bash
+python3 scripts/build.py
+```
+This compiles all TypeScript modules in [`src/`](./src/) and [`andi/`](./andi/) into [`dist/andi-gen1.js`](./dist/andi-gen1.js), [`dist/bookmarklet.txt`](./dist/bookmarklet.txt), and [`dist/extension/`](./dist/extension/).
 
-## Sounds handy! How do I install ANDI?
+---
 
-ANDI is a browser-based "favelet" (bookmarklet) that installs with a drag and drop and launches with the click of a button:
-
-* **ANDI Next (TypeScript Edition)**:
-  * **Bookmarklet**: Copy the snippet from [`dist/bookmarklet.txt`](./dist/bookmarklet.txt) into a browser bookmark URL, or open [`demo.html`](./demo.html) and drag the **ANDI Next (ALL)** button to your Bookmarks Bar.
-  * **Browser Extension (Manifest V3)**: Load [`dist/extension`](./dist/extension) as an unpacked extension in Chrome or Edge (`chrome://extensions` → **Load unpacked**).
-* **Original SSA ANDI**:
-  * Visit the [SSA ANDI installation page](https://www.ssa.gov/accessibility/andi/help/install.html) for official browser installation instructions (includes keyboard accessible instructions) and [alternate hosting instructions](https://www.ssa.gov/accessibility/andi/help/install.html#github).
-
-## How can I make ANDI better?
-
-If you would like to contribute to ANDI's development, some background knowledge of accessibility would certainly be helpful.
-* **ANDI Next (`src/`)** is written in strict **TypeScript**, native DOM APIs, and Shadow DOM CSS, compiled via `python3 scripts/build.py`.
-* **Legacy ANDI (`andi/`)** is written in JavaScript, jQuery, HTML, and CSS.
-
-Knowledge of JavaScript/TypeScript optimization and DOM manipulation is crucial to maintaining ANDI's quick agility.
-
-## What areas of accessibility does ANDI cover?
-
-ANDI offers the ability to inspect focusable elements (`fANDI`), images/graphics (`gANDI`), links and buttons (`lANDI`), data tables (`tANDI`), page structure (`sANDI`), color contrast (`cANDI`), hidden content (`hANDI`), and iframes (`iANDI`)—either individually or all at once using **ANDI Next's `ALL` mode**.
-
-## Who maintains ANDI?
-
-* **Original ANDI**: Created and maintained by the **Accessible Solutions Branch at the U.S. Social Security Administration (SSA)** ([SSAgov/ANDI](https://github.com/SSAgov/ANDI)).
-* **ANDI Next Fork**: Maintained in [devarshipant/andi-next](https://github.com/devarshipant/andi-next) under the terms of the [Apache License 2.0](./LICENSE.md).
-
-## Security note
-
-ANDI runs within the browser context of the page being inspected. When testing untrusted, public, externally supplied, or user-authored content, use a separate browser profile and do not use that profile for privileged or sensitive authenticated work. A separate tab is not sufficient.
+## License & Attribution
+Original ANDI work is developed by the Social Security Administration (SSA) and licensed under the [Apache License, Version 2.0](./LICENSE).
+ANDI-Gen1 preserves all original Apache 2.0 license terms and attributions while refactoring the codebase into strict TypeScript (`src/*.ts` and `andi/*.ts`).

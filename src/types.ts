@@ -1,12 +1,17 @@
 /**
- * ANDI Next — Core Type Definitions
+ * ANDI-Gen1 — Core Type Definitions
  * Strict, zero-dependency TypeScript types for accessibility inspection,
- * persistent DOM notes, and multi-module ("All") defect reporting.
+ * localStorage fly-in notes, DOM node screenshots, iframe step-in, CSP resolution,
+ * dockable layouts, and light/dark themes.
  */
 
-export type AndiMode = 'all' | 'f' | 'g' | 'l' | 't' | 's' | 'c' | 'h' | 'i';
+export type AndiMode = 'f' | 'g' | 'l' | 't' | 's' | 'c' | 'h' | 'i' | 'all';
 
 export type AlertLevel = 'danger' | 'warning' | 'caution';
+
+export type DockPosition = 'top' | 'bottom' | 'left' | 'right' | 'dom';
+
+export type ThemeMode = 'dark' | 'light';
 
 export interface AndiAlert {
   id: string;
@@ -20,6 +25,22 @@ export interface AndiNote {
   text: string;
   severity: AlertLevel;
   updatedAt: string;
+  selector: string;
+  screenshotDataUrl?: string;
+}
+
+export interface CspViolationRecord {
+  violatedDirective: string;
+  blockedURI: string;
+  timestamp: string;
+}
+
+export interface CspReportState {
+  metaTagCount: number;
+  metaPolicies: string[];
+  adoptedStyleSheetsActive: boolean;
+  metaResolved: boolean;
+  violations: CspViolationRecord[];
 }
 
 export interface AccessibleComponents {
@@ -60,12 +81,18 @@ export interface InspectedElementRecord {
   alerts: AndiAlert[];
   modulesMatched: Array<Exclude<AndiMode, 'all'>>;
   note: AndiNote | null;
+  isIframe: boolean;
+  iframeAccessible: boolean;
+  iframeSrc: string;
 }
 
 export interface PageIndex {
+  doc: Document;
+  win: Window;
   root: HTMLElement;
   allElements: HTMLElement[];
   visibleElements: HTMLElement[];
+  iframes: HTMLIFrameElement[];
   idMap: Map<string, HTMLElement[]>;
   labelForMap: Map<string, HTMLLabelElement[]>;
   styleCache: WeakMap<Element, CSSStyleDeclaration>;
@@ -76,6 +103,7 @@ export interface DefectReportItem {
   index: number;
   selector: string;
   tagAndRole: string;
+  frameContext: string;
   modules: string[];
   accessibleName: string;
   accessibleDescription: string;
@@ -94,10 +122,12 @@ export interface DefectReport {
   generatedAt: string;
   pageUrl: string;
   pageTitle: string;
+  frameContext: string;
   modeRun: AndiMode;
   totalElementsInspected: number;
+  totalAlertedElements: number;
   totalAlerts: number;
-  totalNotes: number;
+  totalNotesIncluded: number;
+  totalScreenshotsIncluded: number;
   items: DefectReportItem[];
 }
-

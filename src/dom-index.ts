@@ -1,13 +1,13 @@
 /**
- * ANDI Next — High-Performance DOM Indexer & Style Cache
- * Replaces O(N^2) jQuery Sizzle queries with a single-pass TreeWalker,
- * WeakMap computed-style caching, and O(1) Map/Set lookups.
+ * ANDI-Gen1 — High-Performance DOM Indexer & Iframe Context Support
+ * Supports indexing the top-level document OR any stepped-into <iframe> document
+ * with a single-pass TreeWalker, WeakMap style cache, and O(1) Map/Set lookups.
  */
 
 import { PageIndex } from './types';
 
-export const ANDI_HOST_ID = 'andi-next-host';
-export const ANDI_LASER_ID = 'andi-next-laser-svg';
+export const ANDI_HOST_ID = 'andi-gen1-host';
+export const ANDI_LASER_ID = 'andi-gen1-laser-svg';
 
 export const VALID_ARIA_ROLES: ReadonlySet<string> = new Set([
   'alert', 'alertdialog', 'application', 'article', 'banner', 'button',
@@ -35,11 +35,14 @@ const NATIVELY_FOCUSABLE_TAGS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Builds a single-pass index of the live page DOM while skipping ANDI's own UI.
+ * Builds a single-pass index of the target document or iframe body while skipping ANDI's UI.
  */
 export function buildPageIndex(root: HTMLElement = document.body): PageIndex {
+  const doc = root.ownerDocument || document;
+  const win = doc.defaultView || window;
   const allElements: HTMLElement[] = [];
   const visibleElements: HTMLElement[] = [];
+  const iframes: HTMLIFrameElement[] = [];
   const idMap = new Map<string, HTMLElement[]>();
   const labelForMap = new Map<string, HTMLLabelElement[]>();
   const styleCache = new WeakMap<Element, CSSStyleDeclaration>();
@@ -47,13 +50,13 @@ export function buildPageIndex(root: HTMLElement = document.body): PageIndex {
   const getStyle = (el: Element): CSSStyleDeclaration => {
     let cached = styleCache.get(el);
     if (!cached) {
-      cached = window.getComputedStyle(el);
+      cached = win.getComputedStyle(el);
       styleCache.set(el, cached);
     }
     return cached;
   };
 
-  const walker = document.createTreeWalker(
+  const walker = doc.createTreeWalker(
     root,
     NodeFilter.SHOW_ELEMENT,
     {
@@ -83,6 +86,10 @@ export function buildPageIndex(root: HTMLElement = document.body): PageIndex {
     if (isElementVisible(current, getStyle)) {
       visibleElements.push(current);
 
+      if (current.tagName === 'IFRAME') {
+        iframes.push(current as HTMLIFrameElement);
+      }
+
       if (current.tagName === 'LABEL') {
         const labelEl = current as HTMLLabelElement;
         const forVal = labelEl.getAttribute('for')?.trim();
@@ -101,9 +108,12 @@ export function buildPageIndex(root: HTMLElement = document.body): PageIndex {
   }
 
   return {
+    doc,
+    win,
     root,
     allElements,
     visibleElements,
+    iframes,
     idMap,
     labelForMap,
     styleCache,
@@ -125,8 +135,9 @@ export function isElementVisible(
   if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') {
     return false;
   }
+  const doc = el.ownerDocument || document;
   let parent = el.parentElement;
-  while (parent && parent !== document.body && parent !== document.documentElement) {
+  while (parent && parent !== doc.body && parent !== doc.documentElement) {
     if (parent.hasAttribute('hidden') || getStyle(parent).display === 'none') {
       return false;
     }
@@ -224,8 +235,9 @@ export function isBlockLevel(
  * Checks whether an element or any of its ancestors up to body has aria-hidden="true".
  */
 export function isAriaHiddenInTree(el: Element): boolean {
+  const doc = el.ownerDocument || document;
   let curr: Element | null = el;
-  while (curr && curr !== document.body && curr !== document.documentElement) {
+  while (curr && curr !== doc.body && curr !== doc.documentElement) {
     if (curr.getAttribute('aria-hidden') === 'true') {
       return true;
     }
@@ -235,15 +247,27 @@ export function isAriaHiddenInTree(el: Element): boolean {
 }
 
 /**
- * Generates a concise, human-readable and unique CSS selector for defect reporting.
+ * Checks whether an iframe's contentDocument is accessible under Same-Origin Policy.
+ */
+export function canStepIntoIframe(iframe: HTMLIFrameElement): boolean {
+  try {
+    return Boolean(iframe.contentDocument && iframe.contentDocument.body);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Generates a concise, human-readable and unique CSS selector for defect reporting and localStorage keys.
  */
 export function getElementSelector(el: Element): string {
   if (el.id) {
     return `#${CSS.escape(el.id)}`;
   }
+  const doc = el.ownerDocument || document;
   const parts: string[] = [];
   let curr: Element | null = el;
-  while (curr && curr !== document.body && curr !== document.documentElement) {
+  while (curr && curr !== doc.body && curr !== doc.documentElement) {
     let part = curr.tagName.toLowerCase();
     if (curr.id) {
       parts.unshift(`#${CSS.escape(curr.id)}`);
@@ -278,4 +302,3 @@ export function formatTagName(el: Element): string {
   }
   return tag;
 }
-

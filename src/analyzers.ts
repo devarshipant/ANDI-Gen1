@@ -1,7 +1,7 @@
 /**
- * ANDI Next — Multi-Module Accessibility Analysis Engine
+ * ANDI-Gen1 — Multi-Module Accessibility Analysis Engine
  * Supports running individual modules (f, g, l, t, s, c, h, i) OR the unified
- * `'all'` mode that runs every accessibility test suite in a single pass.
+ * `'all'` mode (placed as the last option in the mode droplist), plus iframe detection.
  */
 
 import {
@@ -11,6 +11,7 @@ import {
   PageIndex
 } from './types';
 import {
+  canStepIntoIframe,
   formatTagName,
   getElementSelector,
   getFocusability,
@@ -19,28 +20,24 @@ import {
 } from './dom-index';
 import { computeAccessibleData, ComputedAccessibilityResult } from './acc-name';
 import { readElementNote } from './notes-report';
-
-const VAGUE_LINK_PHRASES: ReadonlySet<string> = new Set([
-  'click here', 'here', 'link', 'more', 'read more', 'learn more', 'info', 'details', 'go'
-]);
-
-const REDUNDANT_IMAGE_REGEX = /\b(image of|graphic of|picture of|photo of|icon of)\b/i;
-const IMAGE_FILENAME_REGEX = /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i;
+import { evaluateFocusableElement } from '../andi/fandi';
+import { evaluateGraphicElement } from '../andi/gandi';
+import { evaluateLinkOrButtonElement } from '../andi/landi';
+import { evaluateTableElement } from '../andi/tandi';
 
 export function analyzePage(
   pageIndex: PageIndex,
-  mode: AndiMode
+  mode: AndiMode,
+  frameContext = 'top'
 ): InspectedElementRecord[] {
   const records: InspectedElementRecord[] = [];
   let elementCounter = 0;
 
-  // Trackers for cross-element checks (links, buttons, accesskeys, headings)
   const linkSignatures = new Map<string, { href: string; record: InspectedElementRecord }>();
   const buttonNames = new Map<string, InspectedElementRecord>();
   const accessKeyMap = new Map<string, InspectedElementRecord>();
   let previousHeadingLevel = 0;
 
-  // Determine candidate elements: visible elements for most modes, plus hidden elements if mode is 'h' or 'all'
   const candidatePool =
     mode === 'h' || mode === 'all' ? pageIndex.allElements : pageIndex.visibleElements;
   const visibleSet = new Set<HTMLElement>(pageIndex.visibleElements);
@@ -50,6 +47,7 @@ export function analyzePage(
     const tag = el.tagName.toLowerCase();
     const role = getValidRole(el);
     const focusInfo = getFocusability(el);
+    const selector = getElementSelector(el);
 
     const matchedModules = getMatchedModulesForElement(
       el,
@@ -60,9 +58,10 @@ export function analyzePage(
       pageIndex
     );
 
+    const existingNote = readElementNote(el, selector, frameContext);
     const shouldInspect =
       mode === 'all'
-        ? matchedModules.length > 0 || readElementNote(el) !== null
+        ? matchedModules.length > 0 || existingNote !== null
         : matchedModules.includes(mode);
 
     if (!shouldInspect) {
@@ -75,7 +74,6 @@ export function analyzePage(
     const activeModules: Array<Exclude<AndiMode, 'all'>> =
       mode === 'all' ? matchedModules : [mode];
 
-    // Run module checks
     for (const mod of activeModules) {
       switch (mod) {
         case 'f':
@@ -118,7 +116,6 @@ export function analyzePage(
       }
     }
 
-    // Shared ID duplicate check (O(1) via pageIndex.idMap)
     if (el.id) {
       const idMatches = pageIndex.idMap.get(el.id);
       if (idMatches && idMatches.length > 1) {
@@ -134,11 +131,14 @@ export function analyzePage(
 
     elementCounter += 1;
     const rawAccessKey = el.getAttribute('accesskey')?.trim().toUpperCase() || null;
+    const isIframe = tag === 'iframe';
+    const iframeAccessible = isIframe ? canStepIntoIframe(el as HTMLIFrameElement) : false;
+    const iframeSrc = isIframe ? el.getAttribute('src') || '(inline srcdoc)' : '';
 
     const record: InspectedElementRecord = {
       index: elementCounter,
       element: el,
-      selector: getElementSelector(el),
+      selector,
       tagName: formatTagName(el),
       role,
       isFocusable: focusInfo.isFocusable,
@@ -153,10 +153,12 @@ export function analyzePage(
       components: computed.components,
       alerts,
       modulesMatched: matchedModules,
-      note: readElementNote(el)
+      note: existingNote,
+      isIframe,
+      iframeAccessible,
+      iframeSrc
     };
 
-    // Cross-element duplicate accesskey check
     if (rawAccessKey && activeModules.includes('f')) {
       if (rawAccessKey.length > 1) {
         pushAlert(
@@ -182,7 +184,6 @@ export function analyzePage(
       }
     }
 
-    // Cross-element ambiguous link & non-unique button checks
     if (activeModules.includes('l') && computed.accName) {
       const sig = `${computed.accName.toLowerCase()}||${computed.accDesc.toLowerCase()}`;
       if (tag === 'a' || role === 'link') {
@@ -244,12 +245,10 @@ function getMatchedModulesForElement(
     }
   }
 
-  // fANDI: Focusable elements + canvas
   if (isFocusable || tag === 'canvas') {
     matched.push('f');
   }
 
-  // gANDI: Graphics / Images
   if (
     tag === 'img' ||
     tag === 'svg' ||
@@ -262,7 +261,6 @@ function getMatchedModulesForElement(
     matched.push('g');
   }
 
-  // lANDI: Links & Buttons
   if (
     tag === 'a' ||
     tag === 'button' ||
@@ -274,12 +272,10 @@ function getMatchedModulesForElement(
     matched.push('l');
   }
 
-  // tANDI: Tables
   if (tag === 'table' || role === 'table' || role === 'grid' || tag === 'th' || tag === 'td') {
     matched.push('t');
   }
 
-  // sANDI: Structures (Headings, Lists, Landmarks, Live Regions)
   if (
     /^h[1-6]$/.test(tag) ||
     role === 'heading' ||
@@ -292,12 +288,10 @@ function getMatchedModulesForElement(
     matched.push('s');
   }
 
-  // cANDI: Text-bearing elements for contrast check
   if (hasDirectNonEmptyTextNode(el) && !['script', 'style', 'noscript', 'title'].includes(tag)) {
     matched.push('c');
   }
 
-  // iANDI: Iframes
   if (tag === 'iframe') {
     matched.push('i');
   }
@@ -315,113 +309,10 @@ function runFocusableChecks(
   pageIndex: PageIndex,
   alerts: AndiAlert[]
 ): void {
-  // 1. Missing Accessible Name
-  if (!computed.accName && !isAriaHiddenInTree(el)) {
-    if (computed.components.ariaDescribedby) {
-      pushAlert(
-        alerts,
-        'f',
-        'ALERT_DBY_ALONE',
-        'warning',
-        `[aria-describedby] is used without any component that provides an accessible name.`
-      );
-    } else {
-      pushAlert(
-        alerts,
-        'f',
-        'ALERT_NO_ACC_NAME',
-        'danger',
-        `<${formatTagName(el)}> has no accessible name, associated <label>, or [title].`
-      );
-    }
+  const fAlerts = evaluateFocusableElement(el, tag, focusInfo, computed, pageIndex);
+  for (const a of fAlerts) {
+    alerts.push(a);
   }
-
-  // 2. Missing ID references in aria-labelledby / aria-describedby
-  if (computed.missingLabelledbyIds.length > 0) {
-    pushAlert(
-      alerts,
-      'f',
-      'ALERT_MISSING_LBY_REF',
-      'danger',
-      `[aria-labelledby] references missing ID(s): "${computed.missingLabelledbyIds.join(', ')}".`
-    );
-  }
-  if (computed.missingDescribedbyIds.length > 0) {
-    pushAlert(
-      alerts,
-      'f',
-      'ALERT_MISSING_DBY_REF',
-      'warning',
-      `[aria-describedby] references missing ID(s): "${computed.missingDescribedbyIds.join(', ')}".`
-    );
-  }
-
-  // 3. Misspelled aria-labeledby
-  if (el.hasAttribute('aria-labeledby')) {
-    pushAlert(
-      alerts,
-      'f',
-      'ALERT_MISSPELLED_ARIA',
-      'danger',
-      `[aria-labeledby] is misspelled; use [aria-labelledby].`
-    );
-  }
-
-  // 4. Duplicate <label for="..."> pointing to this element (O(1) via labelForMap)
-  if (el.id) {
-    const matchingLabels = pageIndex.labelForMap.get(el.id);
-    if (matchingLabels && matchingLabels.length > 1) {
-      pushAlert(
-        alerts,
-        'f',
-        'ALERT_DUP_LABEL_FOR',
-        'danger',
-        `More than one <label for="${el.id}"> (${matchingLabels.length}) associates with this element.`
-      );
-    }
-  }
-
-  // 5. Positive tabindex > 0 disrupts natural tab order
-  if (focusInfo.tabIndexValue !== null && focusInfo.tabIndexValue > 0) {
-    pushAlert(
-      alerts,
-      'f',
-      'ALERT_POSITIVE_TABINDEX',
-      'warning',
-      `[tabindex="${focusInfo.tabIndexValue}"] is greater than 0 and overrides natural DOM tab order.`
-    );
-  }
-
-  // 6. Focusable element inside aria-hidden="true"
-  if (focusInfo.isFocusable && isAriaHiddenInTree(el)) {
-    pushAlert(
-      alerts,
-      'f',
-      'ALERT_FOCUSABLE_ARIA_HIDDEN',
-      'danger',
-      `Focusable element has or is contained by [aria-hidden="true"].`
-    );
-  }
-
-  // 7. Small clickable area on unlabelled checkbox / radio
-  if (
-    tag === 'input' &&
-    ['checkbox', 'radio'].includes((el.getAttribute('type') || '').toLowerCase()) &&
-    !computed.components.nativeLabel
-  ) {
-    const rect = el.getBoundingClientRect();
-    if (rect.width > 0 && rect.width < 21 && rect.height > 0 && rect.height < 21) {
-      pushAlert(
-        alerts,
-        'f',
-        'ALERT_SMALL_CLICK_AREA',
-        'caution',
-        `Small clickable area (${Math.round(rect.width)}x${Math.round(rect.height)}px); associate a <label> to increase target size.`
-      );
-    }
-  }
-
-  // 8. Excessive accessible name length (> 250 chars)
   if (computed.accName.length > 250) {
     pushAlert(
       alerts,
@@ -431,7 +322,6 @@ function runFocusableChecks(
       `Accessible name length (${computed.accName.length} chars) exceeds 250 characters; consider condensing.`
     );
   }
-
   void role;
 }
 
@@ -443,60 +333,9 @@ function runGraphicsChecks(
   computed: ComputedAccessibilityResult,
   alerts: AndiAlert[]
 ): void {
-  const isDecorative =
-    role === 'presentation' ||
-    role === 'none' ||
-    (tag === 'img' && el.getAttribute('alt') === '');
-
-  if (role === 'image') {
-    pushAlert(
-      alerts,
-      'g',
-      'ALERT_ROLE_IMAGE_INVALID',
-      'danger',
-      `[role="image"] is invalid; use [role="img"].`
-    );
-  }
-
-  if (isDecorative && isTabbable) {
-    pushAlert(
-      alerts,
-      'g',
-      'ALERT_DECORATIVE_TABBABLE',
-      'danger',
-      `Image marked as decorative is in the keyboard tab order.`
-    );
-  }
-
-  if (!isDecorative && !computed.accName && !isAriaHiddenInTree(el)) {
-    pushAlert(
-      alerts,
-      'g',
-      'ALERT_IMG_NO_NAME',
-      'danger',
-      `Graphic <${tag}> has no accessible name, [alt], or [title].`
-    );
-  }
-
-  if (computed.accName) {
-    if (REDUNDANT_IMAGE_REGEX.test(computed.accName)) {
-      pushAlert(
-        alerts,
-        'g',
-        'ALERT_IMG_REDUNDANT_PHRASE',
-        'caution',
-        `Redundant phrase ("image of" / "graphic of") found in image accessible name.`
-      );
-    }
-    if (IMAGE_FILENAME_REGEX.test(computed.accName)) {
-      pushAlert(
-        alerts,
-        'g',
-        'ALERT_IMG_FILENAME_ALT',
-        'warning',
-        `Image accessible name ("${computed.accName}") appears to be a raw file name.`
-      );
-    }
+  const gAlerts = evaluateGraphicElement(el, tag, role, isTabbable, computed);
+  for (const a of gAlerts) {
+    alerts.push(a);
   }
 }
 
@@ -508,50 +347,9 @@ function runLinksButtonsChecks(
   computed: ComputedAccessibilityResult,
   alerts: AndiAlert[]
 ): void {
-  const isLink = tag === 'a' || role === 'link';
-
-  if (isLink) {
-    if (tag === 'a' && !el.hasAttribute('href') && role !== 'button' && role !== 'link') {
-      pushAlert(
-        alerts,
-        'l',
-        'ALERT_ANCHOR_NO_HREF',
-        'warning',
-        `<a> element has no [href] or [role]; may not be keyboard accessible or announced as a link/button.`
-      );
-    }
-    if (computed.accName && VAGUE_LINK_PHRASES.has(computed.accName.trim().toLowerCase())) {
-      pushAlert(
-        alerts,
-        'l',
-        'ALERT_VAGUE_LINK',
-        'caution',
-        `Link text "${computed.accName}" is vague and does not identify its destination out of context.`
-      );
-    }
-    const href = el.getAttribute('href');
-    if (href && href.startsWith('#') && href.length > 1) {
-      const targetId = href.slice(1);
-      if (!document.getElementById(targetId)) {
-        pushAlert(
-          alerts,
-          'l',
-          'ALERT_BROKEN_INPAGE_ANCHOR',
-          'warning',
-          `In-page anchor link references [${href}], but no element with [id="${targetId}"] exists.`
-        );
-      }
-    }
-  }
-
-  if (!focusInfo.isTabbable && !isAriaHiddenInTree(el)) {
-    pushAlert(
-      alerts,
-      'l',
-      'ALERT_INTERACTIVE_NOT_TABBABLE',
-      'warning',
-      `Interactive <${tag}> is not in the sequential keyboard tab order.`
-    );
+  const lAlerts = evaluateLinkOrButtonElement(el, tag, role, focusInfo.isTabbable, computed);
+  for (const a of lAlerts) {
+    alerts.push(a);
   }
 }
 
@@ -562,34 +360,9 @@ function runTableChecks(
   computed: ComputedAccessibilityResult,
   alerts: AndiAlert[]
 ): void {
-  if (tag === 'table' && role !== 'presentation' && role !== 'none') {
-    const thCount = el.querySelectorAll('th, [role="columnheader"], [role="rowheader"]').length;
-    if (thCount === 0) {
-      pushAlert(
-        alerts,
-        't',
-        'ALERT_TABLE_NO_TH',
-        'danger',
-        `Data <table> has no <th> header cells or [role="columnheader"/"rowheader"].`
-      );
-    }
-    if (!computed.accName) {
-      pushAlert(
-        alerts,
-        't',
-        'ALERT_TABLE_NO_NAME',
-        'caution',
-        `Data <table> has no accessible name, <caption>, or aria-label.`
-      );
-    }
-  } else if (tag === 'th' && !computed.accName) {
-    pushAlert(
-      alerts,
-      't',
-      'ALERT_EMPTY_TH',
-      'caution',
-      `Empty <th> table header cell.`
-    );
+  const tAlerts = evaluateTableElement(el, tag, role, computed);
+  for (const a of tAlerts) {
+    alerts.push(a);
   }
 }
 
@@ -819,4 +592,3 @@ function relativeLuminance(r8: number, g8: number, b8: number): number {
   };
   return 0.2126 * transform(r8) + 0.7152 * transform(g8) + 0.0722 * transform(b8);
 }
-
