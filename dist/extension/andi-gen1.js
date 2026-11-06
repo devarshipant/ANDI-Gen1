@@ -1,4 +1,4 @@
-/*! ANDI-Gen1 v31.0.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */
+/*! ANDI-Gen1 v31.1.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */
 (function() {
   'use strict';
 

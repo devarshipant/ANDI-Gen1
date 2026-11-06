@@ -7,6 +7,9 @@ a bookmarklet (`dist/bookmarklet.txt`), and a Manifest V3 browser extension (`di
 
 import json
 import re
+import struct
+import zipfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -189,12 +192,41 @@ def strip_function_signatures(code: str) -> str:
     return code
 
 
+def make_solid_png(size: int, rgb: tuple[int, int, int]) -> bytes:
+    """Generates a valid minimal RGBA PNG icon of `size x size` for the Chrome Web Store package."""
+    r, g, b = rgb
+    raw_rows = b"".join(b"\x00" + bytes([r, g, b, 255]) * size for _ in range(size))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw_rows, 9))
+        + chunk(b"IEND", b"")
+    )
+
+
 def main() -> None:
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     EXT_DIR.mkdir(parents=True, exist_ok=True)
+    ICONS_DIR = EXT_DIR / "icons"
+    ICONS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Remove legacy alias files if present
+    for legacy_file in [DIST_DIR / "andi-next.js", EXT_DIR / "andi-next.js"]:
+        if legacy_file.exists():
+            legacy_file.unlink()
 
     bundle_parts = [
-        "/*! ANDI-Gen1 v31.0.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */",
+        "/*! ANDI-Gen1 v31.1.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */",
         "(function() {",
         "  'use strict';",
     ]
@@ -210,21 +242,34 @@ def main() -> None:
     full_bundle = "\n".join(bundle_parts)
 
     out_gen1_js = DIST_DIR / "andi-gen1.js"
-    out_next_js = DIST_DIR / "andi-next.js"
     out_gen1_js.write_text(full_bundle, encoding="utf-8")
-    out_next_js.write_text(full_bundle, encoding="utf-8")
 
     # Copy into extension folder
     (EXT_DIR / "andi-gen1.js").write_text(full_bundle, encoding="utf-8")
-    (EXT_DIR / "andi-next.js").write_text(full_bundle, encoding="utf-8")
+
+    # Generate required Chrome Web Store icons (16x16, 48x48, 128x128)
+    for sz in (16, 48, 128):
+        (ICONS_DIR / f"icon{sz}.png").write_bytes(make_solid_png(sz, (29, 78, 216)))
 
     manifest = {
         "manifest_version": 3,
         "name": "ANDI-Gen1 — Accessible Name & Description Inspector",
-        "version": "31.0.0",
-        "description": "Zero-dependency TypeScript rewrite of SSA ANDI with Fly-In LocalStorage Notes, Node Screenshots, Iframe Step-In, CSP Guard, Multi-Docking, and Dark/Light Themes.",
+        "version": "31.1.0",
+        "description": "TypeScript rewrite of SSA ANDI with Fly-In Notes, DOM Node Screenshots, Iframe Step-In, CSP Guard, Docking & AAA Themes.",
         "permissions": ["activeTab", "scripting"],
-        "action": {"default_title": "Launch ANDI-Gen1"},
+        "icons": {
+            "16": "icons/icon16.png",
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png",
+        },
+        "action": {
+            "default_title": "Launch ANDI-Gen1",
+            "default_icon": {
+                "16": "icons/icon16.png",
+                "48": "icons/icon48.png",
+                "128": "icons/icon128.png",
+            },
+        },
         "background": {"service_worker": "background.js"},
     }
     (EXT_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -237,6 +282,14 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    # Create Chrome Web Store upload zip (manifest.json at root of zip)
+    zip_path = DIST_DIR / "andi-gen1-chrome-extension.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in sorted(EXT_DIR.rglob("*")):
+            if file_path.is_file() and not file_path.name.startswith("."):
+                arcname = file_path.relative_to(EXT_DIR).as_posix()
+                zf.write(file_path, arcname)
+
     bookmarklet = (
         "javascript:(function(){"
         "window.ANDI_INITIAL_MODE='f';"
@@ -248,6 +301,7 @@ def main() -> None:
     (DIST_DIR / "bookmarklet.txt").write_text(bookmarklet, encoding="utf-8")
 
     print(f"Built {out_gen1_js} ({out_gen1_js.stat().st_size:,} bytes)")
+    print(f"Packaged Chrome Web Store zip: {zip_path} ({zip_path.stat().st_size:,} bytes)")
 
 
 if __name__ == "__main__":
