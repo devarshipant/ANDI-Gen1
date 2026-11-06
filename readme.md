@@ -7,17 +7,23 @@ ANDI (Accessible Name & Description Inspector) is an open-source accessibility t
 **ANDI-Gen1** builds upon the original SSA ANDI and the **ANDI Next** TypeScript rewrite. Every module in both [`src/`](./src/) and [`andi/`](./andi/) is written strictly in zero-dependency **TypeScript** (`fandi.ts`, `gandi.ts`, `landi.ts`, `tandi.ts`, `sandi.ts`, `candi.ts`, `handi.ts`, `iandi.ts`, `andi.ts`, and `help/help.ts`), compiled into a self-contained Shadow DOM bundle ([`dist/andi-gen1.js`](./dist/andi-gen1.js)).
 
 ### What Did ANDI-Gen1 Add?
-1. **On-Demand Fly-In Note Drawer (`localStorage`)**: Saves tester defect notes per DOM node in `window.localStorage` (`ANDI_GEN1_NOTES_STORE_V1`) and on the element's `data-andi-note*` attributes via a slide-out drawer (`📝 Note`), freeing up horizontal space in the main inspection panel.
-2. **Iframe Detection & Step-In / Step-Out**: Detects all `<iframe>` elements on the page and lets testers **Step Into (`⤵`)** and **Step Out (`⤴`)** of same-origin iframes directly from the toolbar or the element header.
-3. **Streamlined 2-Column Main Panel Layout**: Moves the **Page Accessibility Alerts** panel immediately after the **Screen Reader Spoken & Elements** panel.
+1. **Actionable `📝 Notes (x)` Pill & On-Demand Fly-In Note Drawer (`localStorage`)**:
+   - Clicking **`📝 Notes (x)`** in the top telemetry bar opens the Fly-In Notes panel displaying **all saved notes on the page** (with one-click **`🎯 Inspect Node`** jump buttons and screenshot thumbnails) alongside the active element's note editor.
+   - Eliminates redundant `+Add Note` / toolbar `Note` controls in favor of the global **`📝 Notes (x)`** pill and a single contextual **`📝 Note`** button inside the Active Element Navigator.
+2. **Iframe Detection & Step-In / Step-Out**: Detects all `<iframe>` elements on the page and lets testers **Step Into (`↪`)** and **Step Out (`↩`)** of same-origin iframes directly from the toolbar or the element header.
+3. **Ergonomic 3-Zone Top Bar & 2-Column Main Workspace**:
+   - Groups the top bar into **Scope (Mode + Iframes)**, **Telemetry & Triage (`Elements`, `Alerts`, `📝 Notes (x)`, `📋 Defect Report (x)`)**, and **Workspace Chrome (`🛡️ CSP`, `📌 Dock`, `☀️/🌙 Theme`, `✕ Close`)**.
+   - Integrates **`◀ Prev` · `#1 of N` · `Next ▶`** directly into the Active Element Navigator header in Panel 1, with the **Page Accessibility Alerts** panel immediately after Panel 1.
 4. **`ALL` Mode Placed Last in the Mode Droplist**: Orders the module selector as `f`, `g`, `l`, `t`, `s`, `c`, `h`, `i`, and **`ALL — Run All Accessibility Tests`** as the final item in the droplist.
 5. **Built-In CSP Detection & Resolution (`🛡️ CSP`)**: Detects active Content Security Policy `<meta>` tags and runtime `securitypolicyviolation` events, adopts Constructable Stylesheets (`adoptedStyleSheets`) to avoid inline style blocks, and offers one-click Meta CSP resolution for testing.
-6. **Alert-Driven Defect Reports with On-Demand Notes**: Generates Defect Reports strictly from elements that have **Page Accessibility Alerts**, enriched with any on-demand Fly-In Notes and DOM node screenshots.
+6. **Visual & Exportable Defect Report (ANDI Alerts + Notes with Exact DOM Coordinates, Browser, Time & Screenshots)**:
+   - Displays **only defects detected by ANDI (`alerts.length > 0`) plus any tester notes (`note !== null`)**.
+   - Includes a live **Visual Report View** inside the modal that renders **embedded PNG screenshots (`<img>`)**, **exact DOM node coordinates** (`x, y, pageX, pageY, width × height`), **browser/OS & viewport details**, and **timestamps**, plus HTML, Markdown, JSON, and CSV exports.
 7. **5-Way Pinning / Docking (Like DOM Explorer)**: Pin ANDI-Gen1 to **Top**, **Bottom**, **Left Explorer**, **Right Explorer**, or **DOM Inline** (floating next to the inspected element).
-8. **User Themes for Dark & Light Layouts**: Switch between **🌙 Dark** and **☀️ Light** themes at any time, automatically persisted in `localStorage`.
-9. **DOM Node + Tester Note Screenshots**: Capture a high-DPI PNG snapshot of the selected DOM node with the tester's note burned onto the image, preview it inside the Fly-In Note drawer, and download it as part of the HTML/Markdown/CSV Defect Report.
+8. **WCAG AAA High-Contrast Dark & Light Themes**: Switch between **🌙 Dark** (`14.6:1`–`19.3:1` contrast) and **☀️ Light** (`14.2:1`–`20.1:1` contrast) themes at any time, automatically persisted in `localStorage`.
+9. **DOM Node + Tester Note Screenshots**: Clicking **📸 Save Note + Screenshot** captures a high-DPI PNG snapshot of the selected DOM node with its exact coordinates, browser/time metadata, and the tester's note burned onto the image.
 
-*(For a complete technical breakdown of all updates, see [rules.md](./rules.md).)*
+*(For a complete technical breakdown of all updates and the usability analysis, see [rules.md](./rules.md).)*
 
 ---
 

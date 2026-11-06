@@ -1,74 +1,67 @@
-# ANDI-Gen1 — Architectural Rules & List of Updates
+# ANDI-Gen1 — Architectural Rules, Usability Refactoring & List of Updates
 
-This document catalogs the architectural enhancements, feature updates, and full TypeScript refactoring implemented in **ANDI-Gen1** (`v31.0.0`) on top of the original Social Security Administration (SSA) **ANDI (Accessible Name & Description Inspector)** and its first TypeScript iteration (`ANDI Next`).
+This document catalogs the architectural enhancements, feature updates, usability refactoring, and full TypeScript conversion implemented in **ANDI-Gen1** (`v31.1`) on top of the original Social Security Administration (SSA) **ANDI (Accessible Name & Description Inspector)** and its first TypeScript iteration (`ANDI Next`).
 
 ---
 
-## 1. Summary of Updates in ANDI-Gen1
+## 1. Summary of Core Features in ANDI-Gen1
 
-### Feature #1: On-Demand Fly-In Note Alert & `localStorage` Persistence
-- **Previous Behavior (`ANDI Next`)**: The Defect Note & Report panel permanently occupied a middle column in the main inspection bar, consuming horizontal space even when the tester was not actively writing a note.
-- **ANDI-Gen1 Update ([`src/ui-shadow.ts`](./src/ui-shadow.ts), [`src/notes-report.ts`](./src/notes-report.ts))**:
-  - Removed the permanent middle note column from the main bar, freeing up 50% of the horizontal workspace for the **Screen Reader Spoken & Elements** panel and the **Page Accessibility Alerts** panel.
-  - Added an on-demand **📝 Note** button in the toolbar that slides open a **Fly-In Note Drawer (`role="dialog"`)** when needed.
-  - Notes are automatically keyed by page origin/pathname, frame context, and DOM selector and saved in `window.localStorage` (`ANDI_GEN1_NOTES_STORE_V1`) while also stamping `data-andi-note*` attributes on the live DOM node.
+### Feature #1: Actionable `Notes (x)` Pill & On-Demand Fly-In Note Drawer (`localStorage`)
+- **Actionable `📝 Notes (x)` Button**: The `Notes (x)` badge in the top telemetry bar is an interactive button (`button.pill-actionable`) that opens the **Fly-In Notes Drawer** and displays **all saved notes on the page** alongside the active element note editor.
+- **No Redundant Note Controls**: Removed duplicate global toolbar `+Add Note` / `Note` buttons so there are only two clear, non-overlapping controls:
+  1. **`📝 Notes (x)`** in the Top Telemetry Bar (opens the drawer and scrolls to the list of all saved page notes).
+  2. **`📝 Note` / `📝 Note ✓`** inside the Active Element Navigator header (opens the drawer focused on the active element's note editor).
+- **Rich Note Metadata in `localStorage`**: Each note saved in `ANDI_GEN1_NOTES_STORE_V1` records the element's **exact DOM coordinates** (`x`, `y`, `pageX`, `pageY`, `width × height`), **Browser & OS environment**, **ISO & local timestamps**, severity level, and annotated PNG screenshot.
 
 ### Feature #2: Iframe Detection & Step-In / Step-Out Function
-- **Previous Behavior**: `iANDI` flagged `<iframe>` elements missing a `title` attribute, but testers could not step inside an embedded `<iframe>` document to inspect its internal controls.
-- **ANDI-Gen1 Update ([`src/dom-index.ts`](./src/dom-index.ts), [`andi/iandi.ts`](./andi/iandi.ts), [`src/ui-shadow.ts`](./src/ui-shadow.ts))**:
-  - Automatically detects all `<iframe>` elements on the page and tests whether their `contentDocument` is same-origin accessible (`canStepIntoIframe`).
-  - Adds an **Iframe Step-In selector** in the top toolbar plus an inline **Step Into Iframe ⤵** button whenever an `<iframe>` element is inspected.
-  - Stepping into an iframe switches the `DomIndexer`, accessibility analyzers, element highlights, and delegated hover/focus listeners directly into the iframe's `contentDocument`, with a one-click **⤴ Step Out** button to return to the top document.
+- Automatically detects all `<iframe>` elements on the page and tests whether their `contentDocument` is same-origin accessible (`canStepIntoIframe`).
+- Provides an **Iframe Step-In selector** in Zone 1 of the top bar (automatically disabled when `0` iframes exist on the page) plus an inline **↪ Step Into Iframe** button whenever an `<iframe>` element is inspected, and a prominent **↩ Step Out of Iframe** button when inside an embedded document.
 
 ### Feature #3: Page Accessibility Alerts Panel Positioned After Screen Reader Spoken & Elements Panel
-- **Previous Behavior**: The main body used a 3-column grid (`Screen Reader Spoken & Elements` -> `Element Defect Note` -> `Page Accessibility Alerts`).
-- **ANDI-Gen1 Update ([`src/ui-shadow.ts`](./src/ui-shadow.ts))**:
-  - Re-architected the main body into a clean 2-panel layout where the **Page Accessibility Alerts** panel sits immediately after the **Screen Reader Spoken Output & Accessibility Components** panel.
+- Re-architected the main workspace into a 2-column grid where the **Page Accessibility Alerts** panel sits immediately after the **Active Element Navigator & Screen Reader Spoken Output** panel.
 
 ### Feature #4: Move `ALL` Mode to the Last Item in the Mode Droplist
-- **Previous Behavior**: `ALL — Run All Accessibility Tests` appeared as the first item in the mode `<select>` droplist.
-- **ANDI-Gen1 Update ([`src/ui-shadow.ts`](./src/ui-shadow.ts))**:
-  - Reordered `DROPLIST_MODES_ORDER` to `['f', 'g', 'l', 't', 's', 'c', 'h', 'i', 'all']` so **`ALL — Run All Accessibility Tests` is the last option** in the mode droplist.
+- Reordered `DROPLIST_MODES_ORDER` to `['f', 'g', 'l', 't', 's', 'c', 'h', 'i', 'all']` so **`ALL — Run All Accessibility Tests` is the last option** in the mode droplist.
 
 ### Feature #5: Built-In Content Security Policy (CSP) Detection & Resolution
-- **Previous Behavior**: Strict host page Content Security Policies (`style-src`, `img-src`, or `<meta http-equiv="Content-Security-Policy">`) could block bookmarklet styles or canvas data URLs without warning.
-- **ANDI-Gen1 Update ([`src/csp-guard.ts`](./src/csp-guard.ts))**:
-  - Added [`CspGuard`](./src/csp-guard.ts), which listens for real-time `SecurityPolicyViolationEvent`s and scans `<meta http-equiv="Content-Security-Policy">` tags in the host document.
-  - Uses **Constructable Stylesheets (`CSSStyleSheet.replaceSync` + `adoptedStyleSheets`)** inside the Shadow DOM and host document to bypass `style-src` inline `<style>` tag restrictions.
-  - Provides a **🛡️ CSP** status button and modal with one-click **Resolve Meta CSP** and **Restore Original Meta CSP** actions for local testing environments.
+- [`CspGuard`](./src/csp-guard.ts) listens for real-time `SecurityPolicyViolationEvent`s, scans `<meta http-equiv="Content-Security-Policy">` tags, injects styles via **Constructable Stylesheets (`adoptedStyleSheets`)** to bypass `style-src` inline blocks, and offers one-click **Neutralize Meta CSP Rules** / **Restore Original Meta CSP** actions.
 
-### Feature #6: Defect Report Strictly Scoped to Page Accessibility Alerts + On-Demand Notes
-- **Previous Behavior**: Defect reports included elements that had a manual note even if they had zero accessibility alerts.
-- **ANDI-Gen1 Update ([`src/notes-report.ts`](./src/notes-report.ts))**:
-  - Updated `buildDefectReport()` so that the exported Defect Report is **strictly based on elements that triggered one or more Page Accessibility Alerts (`rec.alerts.length > 0`)**, automatically attaching any on-demand tester notes (from Feature #1) and node screenshots (from Feature #9) recorded for those alerted elements.
+### Feature #6: Defect Report Scoped to ANDI-Detected Defects + Tester Notes with Coordinates, Browser, Time & Screenshots
+- **Strict Defect + Note Filtering**: `buildDefectReport()` only includes elements that have **ANDI-detected accessibility defects (`rec.alerts.length > 0`) PLUS any elements with tester notes (`rec.note !== null`)**.
+- **Visual Defect Report with Embedded Screenshots**: Opening **📋 Defect Report** defaults to **`View: Visual Report (with Screenshots)`**, rendering interactive defect cards with:
+  - **Exact DOM Node Coordinates**: `x, y (page: pageX, pageY) · width×height px`
+  - **Browser & Environment Details**: Browser name/version, OS platform, User-Agent, Viewport dimensions, and Device Pixel Ratio
+  - **Timestamps**: Exact report generation time and individual note timestamp
+  - **Embedded Annotated PNG Screenshots (`<img>`)** captured from the Fly-In Notes drawer (and auto-generated for any note missing a snapshot when the report opens)
+  - Full export & copy support for **HTML (with embedded screenshots)**, **Markdown**, **JSON**, and **CSV**.
 
 ### Feature #7: Pin / Dock to Left, Right, Top, Bottom, or DOM Inline (Like DOM Explorer)
-- **Previous Behavior**: The toolbar could only be docked to the top or bottom of the viewport.
-- **ANDI-Gen1 Update ([`src/ui-shadow.ts`](./src/ui-shadow.ts), [`src/types.ts`](./src/types.ts))**:
-  - Added 5 docking modes selectable from the toolbar and persisted in `localStorage` (`ANDI_GEN1_DOCK`):
-    1. **📌 Pin: Top** (`top`)
-    2. **📌 Pin: Bottom** (`bottom`)
-    3. **📌 Pin: Left Explorer** (`left` — vertical split-pane like DevTools DOM Explorer, pushing page margin-left)
-    4. **📌 Pin: Right Explorer** (`right` — vertical split-pane like DevTools DOM Explorer, pushing page margin-right)
-    5. **📌 Pin: DOM Inline** (`dom` — floating inspector card positioned directly beside the active DOM element)
+- Supports 5 docking modes persisted in `localStorage` (`ANDI_GEN1_DOCK`): **📌 Dock: Top**, **📌 Dock: Bottom**, **📌 Dock: Left Explorer**, **📌 Dock: Right Explorer**, and **📌 Dock: DOM Inline**.
 
-### Feature #8: User Themes for Dark and Light Layouts
-- **Previous Behavior**: The Shadow DOM UI only supported a single dark color scheme.
-- **ANDI-Gen1 Update ([`src/ui-shadow.ts`](./src/ui-shadow.ts))**:
-  - Added full CSS custom property theming for **🌙 Dark** and **☀️ Light** layouts, toggled via the toolbar button (`themeToggleBtn`) and saved in `localStorage` (`ANDI_GEN1_THEME`).
+### Feature #8: High-Contrast WCAG AAA User Themes for Dark and Light Layouts
+- Upgraded both **🌙 Dark** and **☀️ Light** themes to exceed **WCAG AAA (7:1 to 20.1:1)** contrast ratios:
+  - **Dark Theme**: Pure white `#ffffff` (`17.4:1`) and crisp slate `#e2e8f0` (`14.6:1`) text on deep `#020617` / `#0f172a` surfaces, with `#7dd3fc` (`11.4:1`) accents and `#fef08a`-on-`#020617` (`17.8:1`) warning badges.
+  - **Light Theme**: Ink black `#020617` (`20.1:1`) and deep slate `#1e293b` (`14.2:1`) text on `#ffffff` / `#f8fafc` surfaces, with `#0c4a6e` (`9.9:1`) accents and `#334155` (`10.3:1`) high-visibility borders.
 
-### Feature #9: DOM Node Screenshot with Tester Note Burned In & Downloaded with Report
-- **Previous Behavior**: Defect reports were text-only (Markdown/CSV) without visual snapshots of the offending DOM node.
-- **ANDI-Gen1 Update ([`src/notes-report.ts`](./src/notes-report.ts), [`src/ui-shadow.ts`](./src/ui-shadow.ts))**:
-  - In the Fly-In Notes drawer, testers can click **📸 Capture Node + Note Screenshot** to generate a high-DPI HTML5 Canvas PNG card showing:
-    - The element's visual appearance (`backgroundColor`, `border`, `color`, `font`, dimensions, and visible text/label),
-    - The element's selector, tag/role, and computed Screen Reader Output,
-    - The tester's custom defect note and severity badge burned directly onto the image.
-  - The screenshot is previewed inside the Fly-In Notes drawer, saved with the note in `localStorage`, downloadable as a standalone `.png`, and embedded directly in the **HTML Defect Report (`formatReportAsHtml`)** and **Download Report + Screenshots** action.
+### Feature #9: DOM Node Screenshot with Tester Note, Coordinates & Browser Metadata
+- In the Fly-In Notes drawer, clicking **📸 Save Note + Screenshot** renders a high-DPI HTML5 Canvas PNG card burning in the element's visual box, `<tag>`, selector, **exact DOM coordinates (`x, y, pageX, pageY, width × height`)**, **Browser/OS**, **timestamp**, ANDI alert status, and the tester's note.
 
 ---
 
-## 2. Full TypeScript Refactoring of `andi/` Module Files
+## 2. Usability Analysis & 3-Zone Ergonomic Workflow Redesign
+
+### Usability Problems Identified & Resolved
+1. **Unactionable `Notes (x)` Pill & Missing All-Notes View**: Previously, `Notes: x` was a static `<span>` and the drawer only showed the current element's note. Fixed by turning **`📝 Notes (x)`** into an actionable button that opens the drawer and lists **all saved notes on the page** with one-click **`🎯 Inspect Node`** jump buttons and thumbnail previews.
+2. **Redundant `+Add Note` and `Note` Buttons**: Previously, a global `📝 Note` button in the right toolbar competed with `+ Add Note` in the element header. Fixed by removing the duplicate toolbar button so **`📝 Notes (x)`** in the telemetry bar manages all notes while a single **`📝 Note`** button in the element header edits the active element.
+3. **Disconnected `◀ Prev` / `Next ▶` Controls**: Previously, `Prev` and `Next` were far away on the right side of the top bar while the `#1 of 8 <input>` badge was on the left of Panel 1. Fixed by moving **`◀ Prev` · `#1 of 8` · `Next ▶`** directly into the **Active Element Navigator Bar** at the top of Panel 1 alongside the element's tag, exact coordinates `📍 (x, y) w×h`, and contextual `📝 Note` button.
+4. **3-Zone Top Command Bar**:
+   - **Zone 1 (Scope & Frame)**: Brand + Mode Selector (`ALL` last) + Iframe Step-In/Out.
+   - **Zone 2 (Live Audit Telemetry & Triage)**: `Elements: N` + `Alerts: N` + Actionable **`📝 Notes (N)`** + Actionable **`📋 Defect Report (N)`**.
+   - **Zone 3 (Workspace Chrome)**: `🛡️ CSP` + `📌 Dock` + `☀️/🌙 Theme` + `✕ Close`.
+
+---
+
+## 3. Full TypeScript Refactoring of `andi/` Module Files
 
 All legacy `.js` files in the [`andi/`](./andi/) directory have been refactored into strict, zero-dependency TypeScript (`.ts`) modules and the legacy `.js` files removed:
 
@@ -84,17 +77,3 @@ All legacy `.js` files in the [`andi/`](./andi/) directory have been refactored 
 | `andi/handi.js` | [`andi/handi.ts`](./andi/handi.ts) | Hidden content & focusable `aria-hidden` evaluator (`evaluateHiddenElement`) |
 | `andi/iandi.js` | [`andi/iandi.ts`](./andi/iandi.ts) | Iframe detection & Step-In readiness evaluator (`evaluateIframeElement`) |
 | `andi/help/help.js` | [`andi/help/help.ts`](./andi/help/help.ts) | Help documentation table-of-contents & smooth-scroll controller (`AndiHelpController`) |
-
----
-
-## 3. Building & Verifying ANDI-Gen1
-
-```bash
-python3 scripts/build.py
-```
-
-Outputs:
-- [`dist/andi-gen1.js`](./dist/andi-gen1.js) — Self-contained IIFE bundle for bookmarklet or script injection
-- [`dist/andi-next.js`](./dist/andi-next.js) — Backwards-compatible bundle alias
-- [`dist/bookmarklet.txt`](./dist/bookmarklet.txt) — Ready-to-paste bookmarklet URL
-- [`dist/extension/`](./dist/extension/) — Chrome/Edge Manifest V3 unpacked extension

@@ -41,3 +41,4 @@ export function evaluateColorContrastElement(
     requiredContrastRatio: contrast.requiredRatio
   };
 }
+

@@ -44,3 +44,4 @@ export function evaluateHiddenElement(
 
   return alerts;
 }
+

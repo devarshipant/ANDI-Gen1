@@ -1,8 +1,8 @@
 /**
  * ANDI-Gen1 — Core Type Definitions
  * Strict, zero-dependency TypeScript types for accessibility inspection,
- * localStorage fly-in notes, DOM node screenshots, iframe step-in, CSP resolution,
- * dockable layouts, and light/dark themes.
+ * localStorage fly-in notes, DOM node screenshots, coordinates, browser metadata,
+ * iframe step-in, CSP resolution, dockable layouts, and high-contrast themes.
  */
 
 export type AndiMode = 'f' | 'g' | 'l' | 't' | 's' | 'c' | 'h' | 'i' | 'all';
@@ -12,6 +12,24 @@ export type AlertLevel = 'danger' | 'warning' | 'caution';
 export type DockPosition = 'top' | 'bottom' | 'left' | 'right' | 'dom';
 
 export type ThemeMode = 'dark' | 'light';
+
+export interface DomNodeCoordinates {
+  x: number;
+  y: number;
+  pageX: number;
+  pageY: number;
+  width: number;
+  height: number;
+  formatted: string;
+}
+
+export interface BrowserEnvironmentInfo {
+  browserName: string;
+  userAgent: string;
+  platform: string;
+  viewport: string;
+  devicePixelRatio: number;
+}
 
 export interface AndiAlert {
   id: string;
@@ -26,6 +44,10 @@ export interface AndiNote {
   severity: AlertLevel;
   updatedAt: string;
   selector: string;
+  frameContext?: string;
+  tagName?: string;
+  coordinates?: DomNodeCoordinates;
+  browserInfo?: string;
   screenshotDataUrl?: string;
 }
 
@@ -81,6 +103,7 @@ export interface InspectedElementRecord {
   alerts: AndiAlert[];
   modulesMatched: Array<Exclude<AndiMode, 'all'>>;
   note: AndiNote | null;
+  coordinates: DomNodeCoordinates;
   isIframe: boolean;
   iframeAccessible: boolean;
   iframeSrc: string;
@@ -104,6 +127,7 @@ export interface DefectReportItem {
   selector: string;
   tagAndRole: string;
   frameContext: string;
+  coordinates: DomNodeCoordinates;
   modules: string[];
   accessibleName: string;
   accessibleDescription: string;
@@ -120,11 +144,14 @@ export interface DefectReportItem {
 
 export interface DefectReport {
   generatedAt: string;
+  generatedAtLocal: string;
+  browserEnvironment: BrowserEnvironmentInfo;
   pageUrl: string;
   pageTitle: string;
   frameContext: string;
   modeRun: AndiMode;
   totalElementsInspected: number;
+  totalDefectItems: number;
   totalAlertedElements: number;
   totalAlerts: number;
   totalNotesIncluded: number;

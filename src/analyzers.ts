@@ -19,7 +19,7 @@ import {
   isAriaHiddenInTree
 } from './dom-index';
 import { computeAccessibleData, ComputedAccessibilityResult } from './acc-name';
-import { readElementNote } from './notes-report';
+import { getElementCoordinates, readElementNote } from './notes-report';
 import { evaluateFocusableElement } from '../andi/fandi';
 import { evaluateGraphicElement } from '../andi/gandi';
 import { evaluateLinkOrButtonElement } from '../andi/landi';
@@ -62,7 +62,7 @@ export function analyzePage(
     const shouldInspect =
       mode === 'all'
         ? matchedModules.length > 0 || existingNote !== null
-        : matchedModules.includes(mode);
+        : matchedModules.includes(mode) || existingNote !== null;
 
     if (!shouldInspect) {
       continue;
@@ -154,6 +154,7 @@ export function analyzePage(
       alerts,
       modulesMatched: matchedModules,
       note: existingNote,
+      coordinates: getElementCoordinates(el),
       isIframe,
       iframeAccessible,
       iframeSrc
