@@ -241,7 +241,7 @@ def main() -> None:
         "javascript:(function(){"
         "window.ANDI_INITIAL_MODE='f';"
         "var s=document.createElement('script');"
-        "s.src='https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@feat/andi-updates/dist/andi-gen1.js';"
+        "s.src='https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@main/dist/andi-gen1.js?v='+Date.now();"
         "document.head.appendChild(s);"
         "})();"
     )

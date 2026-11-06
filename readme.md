@@ -33,7 +33,7 @@ ANDI (Accessible Name & Description Inspector) is an open-source accessibility t
 Create a new bookmark in your browser's Bookmarks Bar named **ANDI-Gen1** and paste the following URL:
 
 ```javascript
-javascript:(function(){window.ANDI_INITIAL_MODE='f';var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@feat/andi-updates/dist/andi-gen1.js';document.head.appendChild(s);})();
+javascript:(function(){window.ANDI_INITIAL_MODE='f';var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@main/dist/andi-gen1.js?v='+Date.now();document.head.appendChild(s);})();
 ```
 
 ### Option 2: Local Interactive Test Page (`demo.html`)
