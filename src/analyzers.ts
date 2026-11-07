@@ -1,17 +1,21 @@
 /**
- * ANDI-Gen1 — Multi-Module Accessibility Analysis Engine
+ * ANDI-Gen1 — Multi-Module Accessibility Analysis & Element Inventory Engine
  * Supports running individual modules (f, g, l, t, s, c, h, i) OR the unified
- * `'all'` mode (placed as the last option in the mode droplist), plus iframe detection.
+ * `'all'` mode (placed as the last option in the mode droplist), semantic ARIA role
+ * detection, and building the full Element Inventory array for the Fly-In Drawer.
  */
 
 import {
   AndiAlert,
   AndiMode,
   InspectedElementRecord,
+  InventoryCategory,
+  InventoryItem,
   PageIndex
 } from './types';
 import {
   canStepIntoIframe,
+  extractDomNodeSnippet,
   formatTagName,
   getElementSelector,
   getFocusability,
@@ -24,6 +28,25 @@ import { evaluateFocusableElement } from '../andi/fandi';
 import { evaluateGraphicElement } from '../andi/gandi';
 import { evaluateLinkOrButtonElement } from '../andi/landi';
 import { evaluateTableElement } from '../andi/tandi';
+
+const INTERACTIVE_ARIA_WIDGET_ROLES: ReadonlySet<string> = new Set([
+  'button', 'link', 'textbox', 'searchbox', 'combobox', 'listbox', 'option',
+  'checkbox', 'radio', 'switch', 'slider', 'spinbutton', 'tab', 'menuitem',
+  'menuitemcheckbox', 'menuitemradio', 'treeitem'
+]);
+
+const FORM_CONTROL_ROLES: ReadonlySet<string> = new Set([
+  'textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio',
+  'switch', 'slider', 'spinbutton'
+]);
+
+const LANDMARK_TAGS: ReadonlySet<string> = new Set([
+  'main', 'nav', 'header', 'footer', 'aside', 'form', 'region', 'search'
+]);
+
+const LANDMARK_ROLES: ReadonlySet<string> = new Set([
+  'banner', 'navigation', 'main', 'contentinfo', 'complementary', 'region', 'search', 'form'
+]);
 
 export function analyzePage(
   pageIndex: PageIndex,
@@ -139,8 +162,10 @@ export function analyzePage(
       index: elementCounter,
       element: el,
       selector,
+      domSnippet: extractDomNodeSnippet(el),
       tagName: formatTagName(el),
       role,
+      semanticRole: computed.semanticRole,
       isFocusable: focusInfo.isFocusable,
       isTabbable: focusInfo.isTabbable,
       tabIndexValue: focusInfo.tabIndexValue,
@@ -151,6 +176,8 @@ export function analyzePage(
       screenReaderOutput: computed.screenReaderOutput,
       addOnProps: computed.addOnProps,
       components: computed.components,
+      idRefGroups: computed.idRefGroups,
+      tableAssociation: computed.tableAssociation,
       alerts,
       modulesMatched: matchedModules,
       note: existingNote,
@@ -223,6 +250,227 @@ export function analyzePage(
   return records;
 }
 
+/**
+ * Builds a categorized array of interface elements on the page for the
+ * Element Inventory Fly-In Drawer (tables, links, buttons, formControls, landmarks,
+ * headings, graphics, dialogsLive, iframes).
+ */
+export function buildPageInventory(
+  pageIndex: PageIndex,
+  records: InspectedElementRecord[]
+): InventoryItem[] {
+  const recordByElement = new Map<HTMLElement, InspectedElementRecord>();
+  for (const r of records) {
+    recordByElement.set(r.element, r);
+  }
+
+  const inventory: InventoryItem[] = [];
+  let invId = 0;
+
+  for (const el of pageIndex.visibleElements) {
+    const tag = el.tagName.toLowerCase();
+    const role = getValidRole(el);
+    const rec = recordByElement.get(el) || null;
+
+    const categories = classifyInventoryCategories(el, tag, role);
+    if (categories.length === 0) {
+      continue;
+    }
+
+    const computed = rec ? null : computeAccessibleData(el, pageIndex);
+    const accName = rec ? rec.accName : computed!.accName;
+    const accDesc = rec ? rec.accDesc : computed!.accDesc;
+    const semanticRole = rec ? rec.semanticRole : computed!.semanticRole;
+    const domSnippet = rec ? rec.domSnippet : extractDomNodeSnippet(el);
+    const selector = rec ? rec.selector : getElementSelector(el);
+    const coordinates = rec ? rec.coordinates : getElementCoordinates(el);
+    const alertCount = rec ? rec.alerts.length : 0;
+    const tableAssoc = rec ? rec.tableAssociation : computed!.tableAssociation;
+
+    for (const category of categories) {
+      invId += 1;
+      const details = formatInventoryDetails(el, tag, role, category, tableAssoc);
+      inventory.push({
+        id: `inv-${invId}`,
+        category,
+        inspectedIndex: rec ? rec.index : null,
+        element: el,
+        tagName: formatTagName(el),
+        role,
+        semanticRole: semanticRole || role || tag,
+        domSnippet,
+        selector,
+        accName,
+        accDesc,
+        details,
+        alertCount,
+        coordinates
+      });
+    }
+  }
+
+  return inventory;
+}
+
+function classifyInventoryCategories(
+  el: HTMLElement,
+  tag: string,
+  role: string
+): InventoryCategory[] {
+  const cats: InventoryCategory[] = [];
+
+  // 1. Tables & Semantic ARIA Tables/Grids (plus table cells/headers if part of table structure)
+  if (
+    (tag === 'table' && role !== 'presentation' && role !== 'none') ||
+    role === 'table' ||
+    role === 'grid' ||
+    role === 'treegrid'
+  ) {
+    cats.push('tables');
+  }
+
+  // 2. Links
+  if (tag === 'a' || role === 'link') {
+    cats.push('links');
+  }
+
+  // 3. Buttons
+  const inputType = tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
+  if (
+    tag === 'button' ||
+    role === 'button' ||
+    tag === 'summary' ||
+    (tag === 'input' && ['button', 'submit', 'reset', 'image'].includes(inputType))
+  ) {
+    cats.push('buttons');
+  }
+
+  // 4. Form Controls (Native & ARIA widget roles)
+  if (
+    (tag === 'input' && !['button', 'submit', 'reset', 'image', 'hidden'].includes(inputType)) ||
+    tag === 'select' ||
+    tag === 'textarea' ||
+    tag === 'meter' ||
+    tag === 'progress' ||
+    tag === 'output' ||
+    FORM_CONTROL_ROLES.has(role)
+  ) {
+    cats.push('formControls');
+  }
+
+  // 5. Landmarks
+  if (
+    LANDMARK_TAGS.has(tag) ||
+    LANDMARK_ROLES.has(role) ||
+    (tag === 'section' && (el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby')))
+  ) {
+    cats.push('landmarks');
+  }
+
+  // 6. Headings
+  if (/^h[1-6]$/.test(tag) || role === 'heading') {
+    cats.push('headings');
+  }
+
+  // 7. Graphics
+  if (
+    tag === 'img' ||
+    tag === 'svg' ||
+    tag === 'canvas' ||
+    tag === 'area' ||
+    role === 'img' ||
+    role === 'image' ||
+    role === 'figure' ||
+    tag === 'figure'
+  ) {
+    cats.push('graphics');
+  }
+
+  // 8. Dialogs, Lists & Live Regions
+  if (
+    tag === 'dialog' ||
+    role === 'dialog' ||
+    role === 'alertdialog' ||
+    el.hasAttribute('aria-live') ||
+    ['alert', 'status', 'log', 'marquee', 'timer'].includes(role)
+  ) {
+    cats.push('dialogsLive');
+  }
+
+  // 9. Iframes
+  if (tag === 'iframe') {
+    cats.push('iframes');
+  }
+
+  return cats;
+}
+
+function formatInventoryDetails(
+  el: HTMLElement,
+  tag: string,
+  role: string,
+  category: InventoryCategory,
+  tableAssoc: InspectedElementRecord['tableAssociation']
+): string {
+  switch (category) {
+    case 'tables': {
+      const kind = tag === 'table' ? '<table>' : `[role="${role}"]`;
+      if (tableAssoc) {
+        const hdrs = [...tableAssoc.columnHeaders, ...tableAssoc.rowHeaders];
+        const hdrSummary = hdrs.length > 0 ? `Headers: ${hdrs.slice(0, 5).join(', ')}` : 'No headers detected';
+        return `${kind} • ${tableAssoc.rowCount} rows × ${tableAssoc.colCount} cols • ${hdrSummary}`;
+      }
+      return kind;
+    }
+    case 'links': {
+      const href = el.getAttribute('href');
+      return href ? `href="${href}"` : role === 'link' ? '[role="link"] (no href)' : '<a> (no href)';
+    }
+    case 'buttons': {
+      const ariaExpanded = el.getAttribute('aria-expanded');
+      const ariaPressed = el.getAttribute('aria-pressed');
+      const extra: string[] = [];
+      if (role === 'button' && tag !== 'button') extra.push(`<${tag} role="button">`);
+      if (ariaExpanded) extra.push(`expanded=${ariaExpanded}`);
+      if (ariaPressed) extra.push(`pressed=${ariaPressed}`);
+      return extra.join(' • ') || `<${formatTagName(el)}>`;
+    }
+    case 'formControls': {
+      const extra: string[] = [];
+      if (role && FORM_CONTROL_ROLES.has(role) && !['input', 'select', 'textarea'].includes(tag)) {
+        extra.push(`<${tag} role="${role}">`);
+      } else {
+        extra.push(`<${formatTagName(el)}>`);
+      }
+      if (el.hasAttribute('required') || el.getAttribute('aria-required') === 'true') {
+        extra.push('required');
+      }
+      return extra.join(' • ');
+    }
+    case 'landmarks': {
+      const lmRole = role || (tag === 'header' ? 'banner' : tag === 'footer' ? 'contentinfo' : tag === 'nav' ? 'navigation' : tag === 'aside' ? 'complementary' : tag);
+      return `Landmark: ${lmRole} (<${tag}>)`;
+    }
+    case 'headings': {
+      const lvl = el.getAttribute('aria-level') || (/^h[1-6]$/.test(tag) ? tag.charAt(1) : '2');
+      return `Level H${lvl} (${role === 'heading' && !/^h[1-6]$/.test(tag) ? `<${tag} role="heading" aria-level="${lvl}">` : `<${tag}>`})`;
+    }
+    case 'graphics': {
+      const alt = el.getAttribute('alt');
+      if (alt === '') return 'Decorative (alt="")';
+      return `<${tag}${role ? ` role="${role}"` : ''}>`;
+    }
+    case 'dialogsLive': {
+      const live = el.getAttribute('aria-live');
+      return live ? `aria-live="${live}"` : `role="${role || tag}"`;
+    }
+    case 'iframes': {
+      const src = el.getAttribute('src') || '(inline srcdoc)';
+      return `src="${src}"`;
+    }
+  }
+}
+
 function getMatchedModulesForElement(
   el: HTMLElement,
   tag: string,
@@ -246,7 +494,7 @@ function getMatchedModulesForElement(
     }
   }
 
-  if (isFocusable || tag === 'canvas') {
+  if (isFocusable || tag === 'canvas' || INTERACTIVE_ARIA_WIDGET_ROLES.has(role)) {
     matched.push('f');
   }
 
@@ -255,8 +503,10 @@ function getMatchedModulesForElement(
     tag === 'svg' ||
     tag === 'canvas' ||
     tag === 'area' ||
+    tag === 'figure' ||
     role === 'img' ||
     role === 'image' ||
+    role === 'figure' ||
     (tag === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'image')
   ) {
     matched.push('g');
@@ -273,18 +523,33 @@ function getMatchedModulesForElement(
     matched.push('l');
   }
 
-  if (tag === 'table' || role === 'table' || role === 'grid' || tag === 'th' || tag === 'td') {
+  if (
+    tag === 'table' ||
+    role === 'table' ||
+    role === 'grid' ||
+    role === 'treegrid' ||
+    tag === 'th' ||
+    tag === 'td' ||
+    role === 'columnheader' ||
+    role === 'rowheader' ||
+    role === 'cell' ||
+    role === 'gridcell'
+  ) {
     matched.push('t');
   }
 
   if (
     /^h[1-6]$/.test(tag) ||
     role === 'heading' ||
-    ['main', 'nav', 'header', 'footer', 'aside', 'form', 'region', 'search'].includes(tag) ||
-    ['banner', 'navigation', 'main', 'contentinfo', 'complementary', 'region', 'search', 'form'].includes(role) ||
+    LANDMARK_TAGS.has(tag) ||
+    LANDMARK_ROLES.has(role) ||
+    (tag === 'section' && (el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby'))) ||
     el.hasAttribute('aria-live') ||
-    ['alert', 'status', 'log', 'marquee', 'timer'].includes(role) ||
-    tag === 'li'
+    ['alert', 'status', 'log', 'marquee', 'timer', 'dialog', 'alertdialog'].includes(role) ||
+    tag === 'dialog' ||
+    tag === 'li' ||
+    role === 'listitem' ||
+    role === 'list'
   ) {
     matched.push('s');
   }
@@ -314,6 +579,20 @@ function runFocusableChecks(
   for (const a of fAlerts) {
     alerts.push(a);
   }
+  if (
+    role &&
+    FORM_CONTROL_ROLES.has(role) &&
+    !focusInfo.isFocusable &&
+    el.getAttribute('aria-disabled') !== 'true'
+  ) {
+    pushAlert(
+      alerts,
+      'f',
+      'ALERT_ARIA_WIDGET_NOT_FOCUSABLE',
+      'warning',
+      `Semantic ARIA control [role="${role}"] on <${tag}> is not keyboard focusable (missing tabindex="0").`
+    );
+  }
   if (computed.accName.length > 250) {
     pushAlert(
       alerts,
@@ -323,7 +602,6 @@ function runFocusableChecks(
       `Accessible name length (${computed.accName.length} chars) exceeds 250 characters; consider condensing.`
     );
   }
-  void role;
 }
 
 function runGraphicsChecks(
@@ -398,22 +676,19 @@ function prevHeadingCheck(
         's',
         'ALERT_EMPTY_HEADING',
         'danger',
-        `Heading <${tag}> has no text content or accessible name.`
+        `Heading <${tag}${role === 'heading' ? ' role="heading"' : ''}> has no text content or accessible name.`
       );
     }
-  } else if (tag === 'li') {
-    const listParent = el.parentElement;
-    if (
-      listParent &&
-      !['ul', 'ol', 'menu'].includes(listParent.tagName.toLowerCase()) &&
-      !['list', 'menu', 'menubar', 'tablist'].includes(getValidRole(listParent))
-    ) {
+  } else if (tag === 'li' || role === 'listitem') {
+    const listParent = el.closest('ul, ol, menu, [role="list"], [role="menu"], [role="menubar"], [role="tablist"]');
+    if (!listParent) {
+      const desc = tag === 'li' ? '<li>' : `[role="listitem"]`;
       pushAlert(
         alerts,
         's',
         'ALERT_ORPHAN_LI',
         'danger',
-        `<li> element is not contained within a semantic list container (<ul>, <ol>, or [role="list"]).`
+        `${desc} element is not contained within a semantic list container (<ul>, <ol>, or [role="list"]).`
       );
     }
   }

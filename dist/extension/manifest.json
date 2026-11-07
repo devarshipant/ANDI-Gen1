@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ANDI-Gen1 \u2014 Accessible Name & Description Inspector",
-  "version": "31.1.0",
-  "description": "TypeScript rewrite of SSA ANDI with Fly-In Notes, DOM Node Screenshots, Iframe Step-In, CSP Guard, Docking & AAA Themes.",
+  "version": "31.2.0",
+  "description": "TypeScript rewrite of SSA ANDI with DOM Node Navigation, Semantic Role Detection, Element Inventory Drawer, Notes & Screenshots.",
   "permissions": [
     "activeTab",
     "scripting"

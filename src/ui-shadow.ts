@@ -16,6 +16,8 @@ import {
   DefectReport,
   DockPosition,
   InspectedElementRecord,
+  InventoryCategory,
+  InventoryItem,
   ThemeMode
 } from './types';
 import {
@@ -24,7 +26,7 @@ import {
   buildPageIndex,
   canStepIntoIframe
 } from './dom-index';
-import { analyzePage } from './analyzers';
+import { analyzePage, buildPageInventory } from './analyzers';
 import {
   buildDefectReport,
   captureNodeScreenshotWithNote,
@@ -62,9 +64,11 @@ const MODULE_LABELS: Record<AndiMode, string> = {
 export class AndiGen1Controller {
   private mode: AndiMode;
   private records: InspectedElementRecord[] = [];
+  private inventoryItems: InventoryItem[] = [];
   private elementToRecord = new WeakMap<HTMLElement, InspectedElementRecord>();
   private activeIndex = 0;
   private laserEnabled = true;
+  private highlightedIdRefEl: HTMLElement | null = null;
 
   // Theme & Dock settings
   private theme: ThemeMode = 'dark';
@@ -92,6 +96,9 @@ export class AndiGen1Controller {
   private stepOutBtn!: HTMLButtonElement;
   private elementHeaderEl!: HTMLElement;
   private srOutputEl!: HTMLElement;
+  private srDomNodeBarEl!: HTMLElement;
+  private srIdRefsBarEl!: HTMLElement;
+  private srSemanticAssocBarEl!: HTMLElement;
   private componentsTbodyEl!: HTMLElement;
   private elementAlertsListEl!: HTMLElement;
   private pageAlertsListEl!: HTMLElement;
@@ -107,6 +114,15 @@ export class AndiGen1Controller {
   private allNotesCountHeadingEl!: HTMLElement;
   private allNotesListEl!: HTMLElement;
   private currentScreenshotDataUrl = '';
+
+  // Fly-in Element Inventory Drawer References
+  private inventoryDrawerEl!: HTMLElement;
+  private inventoryCategoryBarEl!: HTMLElement;
+  private inventorySearchInput!: HTMLInputElement;
+  private inventoryCountHeadingEl!: HTMLElement;
+  private inventoryListEl!: HTMLElement;
+  private activeInventoryCategory: InventoryCategory | 'all' = 'all';
+  private inventorySearchQuery = '';
 
   // Modals (CSP Resolver & Visual/Code Defect Report)
   private reportModalEl!: HTMLElement;
@@ -258,11 +274,12 @@ export class AndiGen1Controller {
     this.clearPageElementMarkers(this.activeDocument);
     this.elementToRecord = new WeakMap<HTMLElement, InspectedElementRecord>();
 
-    const pageIndex = buildPageIndex(this.activeDocument);
+    const pageIndex = buildPageIndex(this.activeDocument.body);
     this.detectedIframes = pageIndex.iframes;
     this.populateIframeStepperDropdown();
 
     this.records = analyzePage(pageIndex, this.mode, this.activeFrameLabel);
+    this.inventoryItems = buildPageInventory(pageIndex, this.records);
 
     for (const rec of this.records) {
       this.elementToRecord.set(rec.element, rec);
@@ -277,6 +294,7 @@ export class AndiGen1Controller {
 
     this.renderPageSummaryAndAlerts();
     this.renderAllNotesListInDrawer();
+    this.renderInventoryDrawer();
 
     if (this.records.length > 0) {
       this.inspectByIndex(1, false);
@@ -314,15 +332,56 @@ export class AndiGen1Controller {
 
   private clearPageElementMarkers(doc: Document): void {
     const marked = doc.querySelectorAll(
-      '[data-andi508-index], [data-andi-active], [data-andi-highlight]'
+      '[data-andi508-index], [data-andi-active], [data-andi-highlight], [data-andi-idref-target], [data-andi-pulse-target]'
     );
     marked.forEach((el) => {
       el.removeAttribute('data-andi508-index');
       el.removeAttribute('data-andi-active');
       el.removeAttribute('data-andi-highlight');
       el.removeAttribute('data-andi-alert-level');
+      el.removeAttribute('data-andi-idref-target');
+      el.removeAttribute('data-andi-pulse-target');
     });
+    this.highlightedIdRefEl = null;
     this.eraseLaser();
+  }
+
+  /**
+   * Navigates directly to any DOM element on the page (from the Screen Reader Output DOM Node link,
+   * an IDREF link such as aria-labelledby/aria-describedby, or the Element Inventory Fly-In Drawer).
+   * Scrolls the element smoothly into view, focuses it, pulses its outline, draws the SVG laser beam,
+   * and exposes `window.$andiActiveNode` for instant DevTools inspection.
+   */
+  public navigateToDomElement(targetEl: HTMLElement): void {
+    if (this.highlightedIdRefEl && this.highlightedIdRefEl !== targetEl) {
+      this.highlightedIdRefEl.removeAttribute('data-andi-idref-target');
+      this.highlightedIdRefEl.removeAttribute('data-andi-pulse-target');
+    }
+
+    (window as unknown as Record<string, unknown>).$andiActiveNode = targetEl;
+
+    const existingRec = this.elementToRecord.get(targetEl);
+    if (existingRec) {
+      this.inspectByIndex(existingRec.index, true);
+    } else {
+      targetEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      const hadTabindex = targetEl.hasAttribute('tabindex');
+      if (!hadTabindex) {
+        targetEl.setAttribute('tabindex', '-1');
+      }
+      targetEl.focus({ preventScroll: true });
+      if (!hadTabindex) {
+        targetEl.removeAttribute('tabindex');
+      }
+      targetEl.setAttribute('data-andi-idref-target', 'true');
+      this.highlightedIdRefEl = targetEl;
+      this.drawLaserToElement(targetEl);
+    }
+
+    targetEl.setAttribute('data-andi-pulse-target', 'true');
+    setTimeout(() => {
+      targetEl.removeAttribute('data-andi-pulse-target');
+    }, 1800);
   }
 
   public inspectByIndex(index: number, moveFocus = false): void {
@@ -331,12 +390,18 @@ export class AndiGen1Controller {
       return;
     }
 
+    if (this.highlightedIdRefEl) {
+      this.highlightedIdRefEl.removeAttribute('data-andi-idref-target');
+      this.highlightedIdRefEl = null;
+    }
+
     if (this.activeIndex > 0 && this.records[this.activeIndex - 1]) {
       this.records[this.activeIndex - 1].element.removeAttribute('data-andi-active');
     }
 
     this.activeIndex = index;
     rec.element.setAttribute('data-andi-active', 'true');
+    (window as unknown as Record<string, unknown>).$andiActiveNode = rec.element;
     rec.coordinates = getElementCoordinates(rec.element);
 
     if (moveFocus) {
@@ -432,6 +497,19 @@ export class AndiGen1Controller {
         outline: 3.5px solid #be185d !important;
         outline-offset: 3px !important;
         box-shadow: 0 0 0 4px rgba(190, 24, 93, 0.28) !important;
+      }
+      [data-andi-idref-target="true"] {
+        outline: 3.5px solid #0284c7 !important;
+        outline-offset: 3px !important;
+        box-shadow: 0 0 0 5px rgba(2, 132, 199, 0.35) !important;
+      }
+      @keyframes andiNodePulse {
+        0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.85); }
+        70% { box-shadow: 0 0 0 12px rgba(16, 185, 129, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+      }
+      [data-andi-pulse-target="true"] {
+        animation: andiNodePulse 0.9s ease-out 2 !important;
       }
       [data-andi-note] {
         position: relative;
@@ -618,7 +696,7 @@ export class AndiGen1Controller {
     brandBadge.textContent = 'ANDI-Gen1';
     const versionSpan = document.createElement('span');
     versionSpan.className = 'andi-version';
-    versionSpan.textContent = 'v31.1 TS';
+    versionSpan.textContent = 'v31.2 TS';
     brand.append(brandBadge, versionSpan);
 
     const moduleWrap = document.createElement('div');
@@ -753,7 +831,26 @@ export class AndiGen1Controller {
     srTitle.textContent = '🔊 Screen Reader Spoken Output:';
     this.srOutputEl = document.createElement('div');
     this.srOutputEl.className = 'sr-output';
-    srBox.append(srTitle, this.srOutputEl);
+
+    // Requirement #1: Extracted DOM Node under Screen Reader Output (click to navigate to DOM node)
+    this.srDomNodeBarEl = document.createElement('div');
+    this.srDomNodeBarEl.className = 'sr-dom-node-bar';
+
+    // Requirement #3 (Part B): IDREF attributes (aria-labelledby, aria-describedby, headers, label[for]) with clickable target links
+    this.srIdRefsBarEl = document.createElement('div');
+    this.srIdRefsBarEl.className = 'sr-idrefs-bar';
+
+    // Requirement #2: Semantic association bar (e.g. role="table" / role="grid" header associations)
+    this.srSemanticAssocBarEl = document.createElement('div');
+    this.srSemanticAssocBarEl.className = 'sr-semantic-bar';
+
+    srBox.append(
+      srTitle,
+      this.srOutputEl,
+      this.srDomNodeBarEl,
+      this.srIdRefsBarEl,
+      this.srSemanticAssocBarEl
+    );
 
     const compTable = document.createElement('table');
     compTable.className = 'comp-table';
@@ -783,7 +880,11 @@ export class AndiGen1Controller {
     this.noteDrawerEl = this.buildFlyinNoteDrawer();
     bar.appendChild(this.noteDrawerEl);
 
-    // 4. Modals (#5 CSP Resolver, #3/#4/#6 Visual + Code Defect Report)
+    // 4. On-Demand Fly-in Element Inventory Drawer (Requirement #3: Array of tables, links, buttons, landmarks, headings, etc.)
+    this.inventoryDrawerEl = this.buildFlyinInventoryDrawer();
+    bar.appendChild(this.inventoryDrawerEl);
+
+    // 5. Modals (#5 CSP Resolver, #3/#4/#6 Visual + Code Defect Report)
     this.cspModalEl = this.buildCspModal();
     this.reportModalEl = this.buildReportModal();
     bar.append(this.cspModalEl, this.reportModalEl);
@@ -1137,10 +1238,28 @@ export class AndiGen1Controller {
     pillNotesBtn.textContent = `📝 Notes (${totalNotes})`;
     pillNotesBtn.title = 'Click to open the Notes Panel and view all saved notes on this page';
     pillNotesBtn.addEventListener('click', () => {
+      this.inventoryDrawerEl?.classList.remove('open');
       this.openNoteDrawer('list');
     });
 
-    this.summaryBadgeEl.append(pillFrame, pillElements, pillAlerts, pillNotesBtn);
+    // Requirement #3 (Part A): Actionable `Inventory (x)` button that opens the Element Inventory Fly-In Drawer!
+    const pillInventoryBtn = document.createElement('button');
+    pillInventoryBtn.type = 'button';
+    pillInventoryBtn.className = 'pill pill-inventory pill-actionable';
+    pillInventoryBtn.textContent = `🗂 Inventory (${this.inventoryItems.length})`;
+    pillInventoryBtn.title =
+      'Click to open the Element Inventory Fly-In Drawer (Tables, Links, Buttons, Form Controls, Landmarks, Headings, Graphics, Dialogs/Live, Iframes)';
+    pillInventoryBtn.addEventListener('click', () => {
+      this.openInventoryDrawer();
+    });
+
+    this.summaryBadgeEl.append(
+      pillFrame,
+      pillElements,
+      pillAlerts,
+      pillNotesBtn,
+      pillInventoryBtn
+    );
 
     this.pageAlertsListEl.textContent = '';
 
@@ -1217,7 +1336,10 @@ export class AndiGen1Controller {
     const noteBadgeBtn = this.createButton(
       rec.note ? '📝 Note ✓' : '📝 Note',
       'Open Note & Screenshot Drawer for this element',
-      () => this.openNoteDrawer('editor')
+      () => {
+        this.inventoryDrawerEl?.classList.remove('open');
+        this.openNoteDrawer('editor');
+      }
     );
     if (rec.note) {
       noteBadgeBtn.classList.add('btn-note');
@@ -1239,10 +1361,102 @@ export class AndiGen1Controller {
 
     this.elementHeaderEl.append(navGroup, contextActions);
 
-    // Screen Reader Output
+    // Screen Reader Spoken Output
     this.srOutputEl.textContent =
       rec.screenReaderOutput || '⚠ No Accessible Name / Silent Output';
     this.srOutputEl.className = rec.accName ? 'sr-output' : 'sr-output sr-missing';
+
+    // Requirement #1: Extracted DOM Node directly under Screen Reader Output + Click to Navigate to DOM Node
+    this.srDomNodeBarEl.textContent = '';
+    const domLabel = document.createElement('span');
+    domLabel.className = 'sr-sub-label';
+    domLabel.textContent = '🧬 Extracted DOM Node:';
+
+    const domNodeBtn = document.createElement('button');
+    domNodeBtn.type = 'button';
+    domNodeBtn.className = 'sr-dom-node-link';
+    domNodeBtn.title = `Click to scroll to, focus, highlight, and laser-point DOM node (${rec.selector}) on the page`;
+    const domCode = document.createElement('code');
+    domCode.textContent = rec.domSnippet;
+    const jumpHint = document.createElement('span');
+    jumpHint.className = 'sr-dom-jump-badge';
+    jumpHint.textContent = '🎯 Click to Navigate to DOM Node';
+    domNodeBtn.append(domCode, jumpHint);
+    domNodeBtn.addEventListener('click', () => {
+      this.navigateToDomElement(rec.element);
+    });
+    this.srDomNodeBarEl.append(domLabel, domNodeBtn);
+
+    // Requirement #3 (Part B): IDREF Attributes (aria-labelledby, aria-describedby, headers, label[for]) & Clickable Linked Targets
+    this.srIdRefsBarEl.textContent = '';
+    if (rec.idRefGroups.length > 0) {
+      this.srIdRefsBarEl.style.display = 'flex';
+      for (const group of rec.idRefGroups) {
+        const groupRow = document.createElement('div');
+        groupRow.className = 'sr-idref-group';
+
+        const attrBadge = document.createElement('code');
+        attrBadge.className = 'sr-idref-attr';
+        attrBadge.textContent = `${group.attribute}="${group.rawValue}"`;
+        groupRow.appendChild(attrBadge);
+
+        for (const item of group.items) {
+          if (item.exists && item.targetElement) {
+            const targetEl = item.targetElement;
+            const linkBtn = document.createElement('a');
+            linkBtn.href = `#${item.id}`;
+            linkBtn.className = 'sr-idref-target-link';
+            const previewTxt =
+              item.text.length > 42 ? `${item.text.slice(0, 39)}...` : item.text || '(empty)';
+            linkBtn.textContent = `🔗 #${item.id} → <${item.targetTag}> "${previewTxt}"`;
+            linkBtn.title = `Click to navigate to referenced DOM node ${item.targetSelector} (<${item.targetTag} id="${item.id}">)`;
+            linkBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              this.navigateToDomElement(targetEl);
+            });
+            groupRow.appendChild(linkBtn);
+          } else {
+            const missingBadge = document.createElement('span');
+            missingBadge.className = 'sr-idref-missing';
+            missingBadge.textContent = `⚠️ #${item.id} (Missing ID Target)`;
+            groupRow.appendChild(missingBadge);
+          }
+        }
+        this.srIdRefsBarEl.appendChild(groupRow);
+      }
+    } else {
+      this.srIdRefsBarEl.style.display = 'none';
+    }
+
+    // Requirement #2: Semantic Table / Role Association Bar inside Screen Reader Output
+    this.srSemanticAssocBarEl.textContent = '';
+    if (rec.tableAssociation) {
+      this.srSemanticAssocBarEl.style.display = 'flex';
+      const ta = rec.tableAssociation;
+      const assocText = document.createElement('span');
+      assocText.className = 'sr-semantic-badge';
+      const parts: string[] = [
+        `📊 Semantic [${ta.tableRole}] Association:`
+      ];
+      if (ta.tableName) {
+        parts.push(`Table "${ta.tableName}"`);
+      }
+      if (ta.rowIndex !== null && ta.colIndex !== null) {
+        parts.push(`Cell (Row ${ta.rowIndex}/${ta.rowCount}, Col ${ta.colIndex}/${ta.colCount})`);
+      } else {
+        parts.push(`Grid Size (${ta.rowCount} rows × ${ta.colCount} cols)`);
+      }
+      if (ta.columnHeaders.length > 0) {
+        parts.push(`Col Header(s): "${ta.columnHeaders.join(' | ')}"`);
+      }
+      if (ta.rowHeaders.length > 0) {
+        parts.push(`Row Header(s): "${ta.rowHeaders.join(' | ')}"`);
+      }
+      assocText.textContent = parts.join(' • ');
+      this.srSemanticAssocBarEl.appendChild(assocText);
+    } else {
+      this.srSemanticAssocBarEl.style.display = 'none';
+    }
 
     // Components table
     this.componentsTbodyEl.textContent = '';
@@ -1294,8 +1508,237 @@ export class AndiGen1Controller {
   private renderEmptyActiveElement(): void {
     this.elementHeaderEl.textContent = 'No inspectable elements found for this mode.';
     this.srOutputEl.textContent = '—';
+    this.srDomNodeBarEl.textContent = '';
+    this.srIdRefsBarEl.textContent = '';
+    this.srIdRefsBarEl.style.display = 'none';
+    this.srSemanticAssocBarEl.textContent = '';
+    this.srSemanticAssocBarEl.style.display = 'none';
     this.componentsTbodyEl.textContent = '';
     this.elementAlertsListEl.textContent = '';
+  }
+
+  /**
+   * Requirement #3 (Part A): Builds the Fly-In Element Inventory Drawer (similar to Note Drawer),
+   * listing all page interface elements in an interactive array categorized by:
+   * Tables, Links, Buttons, Form Controls, Landmarks, Headings, Graphics, Dialogs/Live, and Iframes.
+   */
+  private buildFlyinInventoryDrawer(): HTMLElement {
+    const drawer = document.createElement('aside');
+    drawer.className = 'flyin-note-drawer flyin-inventory-drawer';
+    drawer.setAttribute('role', 'dialog');
+    drawer.setAttribute('aria-label', 'Page Element Inventory Fly-In Drawer');
+
+    const topRow = document.createElement('div');
+    topRow.className = 'flyin-header';
+    const title = document.createElement('h3');
+    title.textContent = '🗂 Page Element Inventory Array';
+
+    const topActions = document.createElement('div');
+    topActions.className = 'saved-note-actions';
+
+    const copyInvBtn = this.createButton(
+      '📋 Copy Inventory JSON',
+      'Copy the current filtered Element Inventory Array as JSON to clipboard',
+      () => {
+        const exportArray = this.getFilteredInventoryItems().map((it) => ({
+          id: it.id,
+          category: it.category,
+          inspectedIndex: it.inspectedIndex,
+          tagName: it.tagName,
+          role: it.role,
+          semanticRole: it.semanticRole,
+          domSnippet: it.domSnippet,
+          selector: it.selector,
+          accName: it.accName,
+          accDesc: it.accDesc,
+          details: it.details,
+          alertCount: it.alertCount,
+          coordinates: it.coordinates.formatted
+        }));
+        navigator.clipboard?.writeText(JSON.stringify(exportArray, null, 2));
+        copyInvBtn.textContent = '✓ Copied Array!';
+        setTimeout(() => {
+          copyInvBtn.textContent = '📋 Copy Inventory JSON';
+        }, 1500);
+      }
+    );
+    copyInvBtn.classList.add('btn-primary');
+
+    const closeBtn = this.createButton('✕ Close', 'Close Element Inventory Panel', () => {
+      drawer.classList.remove('open');
+    });
+
+    topActions.append(copyInvBtn, closeBtn);
+    topRow.append(title, topActions);
+
+    // Category filter bar
+    this.inventoryCategoryBarEl = document.createElement('div');
+    this.inventoryCategoryBarEl.className = 'inv-category-bar';
+
+    // Search input
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'inv-search-wrap';
+    this.inventorySearchInput = document.createElement('input');
+    this.inventorySearchInput.type = 'search';
+    this.inventorySearchInput.className = 'inv-search-input';
+    this.inventorySearchInput.placeholder =
+      'Filter inventory array by accessible name, tag, role, DOM snippet, or selector...';
+    this.inventorySearchInput.setAttribute('aria-label', 'Filter Element Inventory');
+    this.inventorySearchInput.addEventListener('input', () => {
+      this.inventorySearchQuery = this.inventorySearchInput.value.trim().toLowerCase();
+      this.renderInventoryDrawer();
+    });
+    searchWrap.appendChild(this.inventorySearchInput);
+
+    this.inventoryCountHeadingEl = document.createElement('h4');
+    this.inventoryCountHeadingEl.className = 'all-notes-heading';
+
+    this.inventoryListEl = document.createElement('ul');
+    this.inventoryListEl.className = 'all-notes-list inv-array-list';
+
+    drawer.append(
+      topRow,
+      this.inventoryCategoryBarEl,
+      searchWrap,
+      this.inventoryCountHeadingEl,
+      this.inventoryListEl
+    );
+    return drawer;
+  }
+
+  public openInventoryDrawer(category?: InventoryCategory | 'all'): void {
+    this.noteDrawerEl?.classList.remove('open');
+    if (category) {
+      this.activeInventoryCategory = category;
+    }
+    this.renderInventoryDrawer();
+    this.inventoryDrawerEl.classList.add('open');
+    this.inventorySearchInput.focus();
+  }
+
+  private getFilteredInventoryItems(): InventoryItem[] {
+    return this.inventoryItems.filter((item) => {
+      if (
+        this.activeInventoryCategory !== 'all' &&
+        item.category !== this.activeInventoryCategory
+      ) {
+        return false;
+      }
+      if (!this.inventorySearchQuery) {
+        return true;
+      }
+      const haystack = `${item.accName} ${item.accDesc} ${item.tagName} ${item.role} ${item.semanticRole} ${item.domSnippet} ${item.selector} ${item.details}`.toLowerCase();
+      return haystack.includes(this.inventorySearchQuery);
+    });
+  }
+
+  private renderInventoryDrawer(): void {
+    if (!this.inventoryCategoryBarEl || !this.inventoryListEl || !this.inventoryCountHeadingEl) {
+      return;
+    }
+
+    const categoryMeta: Array<{ key: InventoryCategory | 'all'; label: string; icon: string }> = [
+      { key: 'all', label: 'All', icon: '🗂' },
+      { key: 'tables', label: 'Tables', icon: '📊' },
+      { key: 'links', label: 'Links', icon: '🔗' },
+      { key: 'buttons', label: 'Buttons', icon: '🔘' },
+      { key: 'formControls', label: 'Form Controls', icon: '⌨️' },
+      { key: 'landmarks', label: 'Landmarks', icon: '🧭' },
+      { key: 'headings', label: 'Headings', icon: '📑' },
+      { key: 'graphics', label: 'Graphics', icon: '🖼' },
+      { key: 'dialogsLive', label: 'Dialogs/Live', icon: '💬' },
+      { key: 'iframes', label: 'Iframes', icon: '🪟' }
+    ];
+
+    this.inventoryCategoryBarEl.textContent = '';
+    for (const cat of categoryMeta) {
+      const count =
+        cat.key === 'all'
+          ? this.inventoryItems.length
+          : this.inventoryItems.filter((i) => i.category === cat.key).length;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `inv-cat-btn ${this.activeInventoryCategory === cat.key ? 'active' : ''}`;
+      btn.textContent = `${cat.icon} ${cat.label} (${count})`;
+      btn.addEventListener('click', () => {
+        this.activeInventoryCategory = cat.key;
+        this.renderInventoryDrawer();
+      });
+      this.inventoryCategoryBarEl.appendChild(btn);
+    }
+
+    const filtered = this.getFilteredInventoryItems();
+    this.inventoryCountHeadingEl.textContent = `Array Elements (${filtered.length} shown of ${this.inventoryItems.length} total)`;
+
+    this.inventoryListEl.textContent = '';
+    if (filtered.length === 0) {
+      const emptyLi = document.createElement('li');
+      emptyLi.className = 'empty-msg';
+      emptyLi.textContent = 'No elements match the selected inventory category or filter.';
+      this.inventoryListEl.appendChild(emptyLi);
+      return;
+    }
+
+    filtered.forEach((item, arrayIdx) => {
+      const li = document.createElement('li');
+      li.className = 'saved-note-card inv-item-card';
+
+      const headerRow = document.createElement('div');
+      headerRow.className = 'saved-note-header';
+
+      const leftBadges = document.createElement('div');
+      leftBadges.className = 'inv-badges';
+
+      const arrIdxBadge = document.createElement('span');
+      arrIdxBadge.className = 'pill pill-info';
+      arrIdxBadge.textContent = `[${arrayIdx}] ${item.category.toUpperCase()}`;
+
+      const roleBadge = document.createElement('code');
+      roleBadge.className = 'el-tag';
+      roleBadge.textContent = `<${item.tagName}${item.role ? ` role="${item.role}"` : ''}> (${item.semanticRole})`;
+
+      leftBadges.append(arrIdxBadge, roleBadge);
+
+      if (item.alertCount > 0) {
+        const alertBadge = document.createElement('span');
+        alertBadge.className = 'pill pill-danger';
+        alertBadge.textContent = `⚠ ${item.alertCount} Alert${item.alertCount === 1 ? '' : 's'}`;
+        leftBadges.appendChild(alertBadge);
+      }
+
+      const jumpBtn = this.createButton(
+        item.inspectedIndex ? `🎯 Navigate (#${item.inspectedIndex})` : '🎯 Navigate to Node',
+        `Scroll to, focus, and highlight ${item.selector}`,
+        () => {
+          this.navigateToDomElement(item.element);
+        }
+      );
+      jumpBtn.classList.add('btn-primary');
+
+      headerRow.append(leftBadges, jumpBtn);
+
+      const nameRow = document.createElement('div');
+      nameRow.className = 'saved-note-text';
+      nameRow.textContent = `🔊 Accessible Name: "${item.accName || '(No Accessible Name)'}"${item.accDesc ? ` | Desc: "${item.accDesc}"` : ''}`;
+
+      const detailsRow = document.createElement('div');
+      detailsRow.className = 'saved-note-meta';
+      detailsRow.textContent = `${item.details} · 📍 ${item.coordinates.formatted}`;
+
+      const domRowBtn = document.createElement('button');
+      domRowBtn.type = 'button';
+      domRowBtn.className = 'sr-dom-node-link inv-dom-btn';
+      domRowBtn.title = `Click to navigate to DOM node ${item.selector}`;
+      const domCode = document.createElement('code');
+      domCode.textContent = item.domSnippet;
+      domRowBtn.appendChild(domCode);
+      domRowBtn.addEventListener('click', () => {
+        this.navigateToDomElement(item.element);
+      });
+
+      li.append(headerRow, nameRow, detailsRow, domRowBtn);
+      this.inventoryListEl.appendChild(li);
+    });
   }
 
   private buildCspModal(): HTMLElement {
@@ -1824,6 +2267,7 @@ export class AndiGen1Controller {
       .pill-danger { background: #7f1d1d; color: #ffffff; border-color: #fca5a5; }
       .pill-ok { background: #065f46; color: #ffffff; border-color: #6ee7b7; }
       .pill-note { background: #4c1d95; color: #ffffff; border-color: #d8b4fe; }
+      .pill-inventory { background: #0c4a6e; color: #ffffff; border-color: #7dd3fc; }
       .pill-actionable {
         cursor: pointer;
         text-decoration: underline;
@@ -1943,6 +2387,181 @@ export class AndiGen1Controller {
         color: var(--text-main);
       }
       .sr-missing { color: var(--sr-missing-color); }
+
+      /* Requirement #1: Extracted DOM Node Bar under Screen Reader Output */
+      .sr-dom-node-bar {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 5px;
+        padding-top: 5px;
+        border-top: 1px dashed var(--border-color);
+      }
+      .sr-sub-label {
+        font-size: 11px;
+        font-weight: 800;
+        color: var(--text-muted);
+      }
+      .sr-dom-node-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        background: var(--bg-panel);
+        color: var(--accent);
+        border: 1.5px solid var(--border-color);
+        border-radius: 5px;
+        padding: 3px 8px;
+        font-size: 11.5px;
+        font-weight: 700;
+        cursor: pointer;
+        text-align: left;
+      }
+      .sr-dom-node-link:hover, .sr-dom-node-link:focus-visible {
+        outline: 2.5px solid var(--accent);
+        border-color: var(--accent);
+      }
+      .sr-dom-node-link code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--text-main);
+        font-weight: 700;
+      }
+      .sr-dom-jump-badge {
+        background: #065f46;
+        color: #ffffff;
+        border: 1px solid #6ee7b7;
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 10.5px;
+        font-weight: 800;
+      }
+
+      /* Requirement #3 (Part B): IDREF Attributes & Linked Items in Screen Reader Output */
+      .sr-idrefs-bar {
+        display: none;
+        flex-direction: column;
+        gap: 4px;
+        margin-top: 5px;
+        padding-top: 5px;
+        border-top: 1px dashed var(--border-color);
+      }
+      .sr-idref-group {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .sr-idref-attr {
+        background: #312e81;
+        color: #ffffff;
+        border: 1px solid #a5b4fc;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .sr-idref-target-link {
+        display: inline-flex;
+        align-items: center;
+        background: #0c4a6e;
+        color: #ffffff;
+        border: 1px solid #7dd3fc;
+        border-radius: 4px;
+        padding: 2px 7px;
+        font-size: 11px;
+        font-weight: 700;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      .sr-idref-target-link:hover, .sr-idref-target-link:focus-visible {
+        outline: 2.5px solid #ffffff;
+        background: #0369a1;
+      }
+      .sr-idref-missing {
+        display: inline-flex;
+        align-items: center;
+        background: #7f1d1d;
+        color: #ffffff;
+        border: 1px solid #fca5a5;
+        border-radius: 4px;
+        padding: 2px 7px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      /* Requirement #2: Semantic Table / Role Association Bar */
+      .sr-semantic-bar {
+        display: none;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 5px;
+        padding-top: 5px;
+        border-top: 1px dashed var(--border-color);
+      }
+      .sr-semantic-badge {
+        background: #064e3b;
+        color: #ffffff;
+        border: 1px solid #6ee7b7;
+        border-radius: 4px;
+        padding: 2px 7px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      /* Requirement #3 (Part A): Element Inventory Fly-In Drawer */
+      .flyin-inventory-drawer {
+        width: 560px;
+        right: -580px;
+      }
+      .flyin-inventory-drawer.open {
+        right: 0;
+      }
+      .inv-category-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-bottom: 8px;
+      }
+      .inv-cat-btn {
+        background: var(--bg-sub);
+        color: var(--text-main);
+        border: 1.5px solid var(--border-color);
+        border-radius: 999px;
+        padding: 3px 9px;
+        font-size: 11px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .inv-cat-btn.active {
+        background: #1d4ed8;
+        color: #ffffff;
+        border-color: #93c5fd;
+      }
+      .inv-search-wrap {
+        margin-bottom: 8px;
+      }
+      .inv-search-input {
+        width: 100%;
+        background: var(--bg-sub);
+        color: var(--text-main);
+        border: 1.5px solid var(--border-color);
+        border-radius: 6px;
+        padding: 6px 9px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .inv-badges {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .inv-dom-btn {
+        width: 100%;
+        margin-top: 4px;
+      }
 
       .comp-table {
         width: 100%;

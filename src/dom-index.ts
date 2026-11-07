@@ -302,3 +302,41 @@ export function formatTagName(el: Element): string {
   }
   return tag;
 }
+
+/**
+ * Extracts a clean, representative HTML DOM node snippet of the inspected element
+ * (excluding internal data-andi-* instrumentation attributes) for display in the Screen Reader Output
+ * and Element Inventory drawer.
+ */
+export function extractDomNodeSnippet(el: Element): string {
+  const tag = el.tagName.toLowerCase();
+  const attrParts: string[] = [];
+  for (let i = 0; i < el.attributes.length; i++) {
+    const attr = el.attributes[i];
+    if (attr.name.startsWith('data-andi-')) {
+      continue;
+    }
+    const val = attr.value.replace(/\s+/g, ' ').trim();
+    const truncatedVal = val.length > 70 ? `${val.slice(0, 67)}...` : val;
+    if (truncatedVal === '') {
+      attrParts.push(attr.name);
+    } else {
+      attrParts.push(`${attr.name}="${truncatedVal}"`);
+    }
+  }
+  const openTag = attrParts.length > 0 ? `<${tag} ${attrParts.join(' ')}>` : `<${tag}>`;
+  const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+  if (voidTags.has(tag)) {
+    return openTag;
+  }
+  const rawText = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const childElemCount = el.children.length;
+  if (!rawText && childElemCount === 0) {
+    return `${openTag}</${tag}>`;
+  }
+  const previewText = rawText.length > 48 ? `${rawText.slice(0, 45)}...` : rawText;
+  if (childElemCount > 0 && !previewText) {
+    return `${openTag}… (${childElemCount} child node${childElemCount === 1 ? '' : 's'})</${tag}>`;
+  }
+  return `${openTag}${previewText}</${tag}>`;
+}

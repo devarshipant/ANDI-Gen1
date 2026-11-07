@@ -20,3 +20,4 @@ Because ANDI-Gen1 does not collect or transmit any user data, no data is ever so
 ## 5. Contact
 For questions or issues regarding this privacy policy, please open an issue at:
 https://github.com/devarshipant/ANDI-Gen1/issues
+

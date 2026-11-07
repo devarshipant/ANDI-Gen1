@@ -85,7 +85,7 @@ def strip_typescript(source: str) -> str:
 
         # Remove type annotations on initialized class fields (`prop: Type = val` -> `prop = val`)
         line = re.sub(
-            r"^(\s*\w+)\s*:\s*(?:AndiMode|ThemeMode|DockPosition|Document|CspViolationRecord\[\]|InspectedElementRecord\[\]|HTMLIFrameElement\[\]|HTMLIFrameElement\s*\|\s*null|HTMLElement\s*\|\s*null|ShadowRoot\s*\|\s*null|SVGSVGElement\s*\|\s*null|SVGLineElement\s*\|\s*null|\(\(e:\s*Event\)\s*=>\s*void\)\s*\|\s*null)\s*=",
+            r"^(\s*\w+)\s*:\s*(?:AndiMode|ThemeMode|DockPosition|Document|InventoryCategory\s*\|\s*'all'|InventoryItem\[\]|CspViolationRecord\[\]|InspectedElementRecord\[\]|HTMLIFrameElement\[\]|HTMLIFrameElement\s*\|\s*null|HTMLElement\s*\|\s*null|ShadowRoot\s*\|\s*null|SVGSVGElement\s*\|\s*null|SVGLineElement\s*\|\s*null|\(\(e:\s*Event\)\s*=>\s*void\)\s*\|\s*null)\s*=",
             r"\1 =",
             line,
         )
@@ -107,7 +107,7 @@ def strip_typescript(source: str) -> str:
 
     # Remove `as Type` casts
     code = re.sub(
-        r"\s+as\s+(?:const|unknown\s+as\s+\{[^}]+\}|HTMLElement\s*\|\s*null|HTMLSelectElement\s*\|\s*null|HTMLInputElement\s*\|\s*HTMLButtonElement|HTMLElement|HTMLLabelElement|HTMLInputElement|HTMLSelectElement|HTMLButtonElement|HTMLTextAreaElement|HTMLImageElement|HTMLIFrameElement|SVGSVGElement|SVGLineElement|SecurityPolicyViolationEvent|ThemeMode\s*\|\s*null|DockPosition\s*\|\s*null|ThemeMode|DockPosition|Array<[^>]+>|\w+\[\]|AndiMode|AlertLevel|Record<[^>]+>)",
+        r"\s+as\s+(?:const|unknown\s+as\s+\{[^}]+\}|unknown\s+as\s+Record<[^>]+>|HTMLElement\s*\|\s*null|HTMLSelectElement\s*\|\s*null|HTMLInputElement\s*\|\s*HTMLButtonElement|HTMLElement\[\]|HTMLElement|HTMLLabelElement|HTMLInputElement|HTMLSelectElement|HTMLButtonElement|HTMLTextAreaElement|HTMLImageElement|HTMLIFrameElement|SVGSVGElement|SVGLineElement|SecurityPolicyViolationEvent|ThemeMode\s*\|\s*null|DockPosition\s*\|\s*null|ThemeMode|DockPosition|Array<[^>]+>|\w+\[\]|AndiMode|AlertLevel|Record<[^>]+>)",
         "",
         code,
     )
@@ -147,6 +147,18 @@ def strip_function_signatures(code: str) -> str:
         r":\s*'::before'\s*\|\s*'::after'",
         r":\s*'danger'\s*\|\s*'warning'\s*\|\s*'caution'",
         r":\s*'editor'\s*\|\s*'list'",
+        r":\s*InventoryCategory\s*\|\s*'all'",
+        r":\s*InspectedElementRecord\['tableAssociation'\]",
+        r":\s*TableSemanticAssociation\s*\|\s*null",
+        r":\s*TableSemanticAssociation",
+        r":\s*IdRefResolutionGroup\[\]",
+        r":\s*IdRefResolutionGroup",
+        r":\s*IdRefTargetItem\[\]",
+        r":\s*IdRefTargetItem",
+        r":\s*InventoryCategory\[\]",
+        r":\s*InventoryCategory",
+        r":\s*InventoryItem\[\]",
+        r":\s*InventoryItem",
         r":\s*ShadowRoot\s*\|\s*Document",
         r":\s*InspectedElementRecord\[\]",
         r":\s*InspectedElementRecord",
@@ -226,7 +238,7 @@ def main() -> None:
             legacy_file.unlink()
 
     bundle_parts = [
-        "/*! ANDI-Gen1 v31.1.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */",
+        "/*! ANDI-Gen1 v31.2.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */",
         "(function() {",
         "  'use strict';",
     ]
@@ -256,8 +268,8 @@ def main() -> None:
     manifest = {
         "manifest_version": 3,
         "name": "ANDI-Gen1 — Accessible Name & Description Inspector",
-        "version": "31.1.0",
-        "description": "TypeScript rewrite of SSA ANDI with Fly-In Notes, DOM Node Screenshots, Iframe Step-In, CSP Guard, Docking & AAA Themes.",
+        "version": "31.2.0",
+        "description": "TypeScript rewrite of SSA ANDI with DOM Node Navigation, Semantic Role Detection, Element Inventory Drawer, Notes & Screenshots.",
         "permissions": ["activeTab", "scripting"],
         "icons": {
             "16": "icons/icon16.png",

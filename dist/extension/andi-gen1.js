@@ -1,4 +1,4 @@
-/*! ANDI-Gen1 v31.1.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */
+/*! ANDI-Gen1 v31.2.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */
 (function() {
   'use strict';
 
@@ -431,23 +431,63 @@ function formatTagName(el) {
   return tag;
 }
 
+/**
+ * Extracts a clean, representative HTML DOM node snippet of the inspected element
+ * (excluding internal data-andi-* instrumentation attributes) for display in the Screen Reader Output
+ * and Element Inventory drawer.
+ */
+function extractDomNodeSnippet(el) {
+  const tag = el.tagName.toLowerCase();
+  const attrParts = [];
+  for (let i = 0; i < el.attributes.length; i++) {
+    const attr = el.attributes[i];
+    if (attr.name.startsWith('data-andi-')) {
+      continue;
+    }
+    const val = attr.value.replace(/\s+/g, ' ').trim();
+    const truncatedVal = val.length > 70 ? `${val.slice(0, 67)}...` : val;
+    if (truncatedVal === '') {
+      attrParts.push(attr.name);
+    } else {
+      attrParts.push(`${attr.name}="${truncatedVal}"`);
+    }
+  }
+  const openTag = attrParts.length > 0 ? `<${tag} ${attrParts.join(' ')}>` : `<${tag}>`;
+  const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+  if (voidTags.has(tag)) {
+    return openTag;
+  }
+  const rawText = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const childElemCount = el.children.length;
+  if (!rawText && childElemCount === 0) {
+    return `${openTag}</${tag}>`;
+  }
+  const previewText = rawText.length > 48 ? `${rawText.slice(0, 45)}...` : rawText;
+  if (childElemCount > 0 && !previewText) {
+    return `${openTag}… (${childElemCount} child node${childElemCount === 1 ? '' : 's'})</${tag}>`;
+  }
+  return `${openTag}${previewText}</${tag}>`;
+}
+
   // === Module: src/acc-name.ts ===
 /**
- * ANDI Next — W3C Accessible Name & Description Computation Engine
+ * ANDI-Gen1 — W3C Accessible Name, Description, IDREF & Semantic Association Engine
  * Implements the Accessible Name and Description Computation 1.2 specification
- * with O(1) label/ID resolution and cached computed styles.
+ * with O(1) label/ID resolution, interactive IDREF target extraction, and semantic
+ * association computation across native HTML and ARIA roles (e.g. role="table", role="grid",
+ * role="row", role="columnheader", role="rowheader", role="cell", role="gridcell").
  */
 
 
 const NAME_FROM_CONTENT_ROLES = new Set([
   'button', 'cell', 'checkbox', 'columnheader', 'gridcell', 'heading', 'link',
-  'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'radio', 'row',
-  'rowgroup', 'rowheader', 'switch', 'tab', 'tooltip', 'tree', 'treeitem'
+  'listitem', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'radio', 'row',
+  'rowgroup', 'rowheader', 'switch', 'tab', 'term', 'tooltip', 'tree', 'treeitem'
 ]);
 
 const NAME_FROM_CONTENT_TAGS = new Set([
-  'a', 'button', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'label', 'option',
-  'summary', 'td', 'th'
+  'a', 'button', 'caption', 'dd', 'dt', 'figcaption', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'label', 'legend', 'li', 'option', 'summary', 'td', 'th'
 ]);
 
 const LABELABLE_TAGS = new Set([
@@ -455,7 +495,7 @@ const LABELABLE_TAGS = new Set([
 ]);
 
 const LABELABLE_ROLES = new Set([
-  'textbox', 'combobox', 'listbox', 'checkbox', 'radio', 'slider', 'spinbutton', 'switch'
+  'textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio', 'slider', 'spinbutton', 'switch'
 ]);
 
 
@@ -466,13 +506,20 @@ function computeAccessibleData(
   const components = {};
   const missingLabelledbyIds = [];
   const missingDescribedbyIds = [];
+  const idRefGroups = [];
   const tag = el.tagName.toLowerCase();
   const role = getValidRole(el);
+  const semanticRole = role || getImplicitRoleLabel(el);
 
-  // 1. Gather raw accessible components on the element
+  // 1. Gather raw accessible components & IDREF resolution groups on the element
   const ariaLabelledby = el.getAttribute('aria-labelledby');
   if (ariaLabelledby !== null) {
-    const resolved = resolveIdReferences(ariaLabelledby, pageIndex, missingLabelledbyIds);
+    const group = buildIdRefGroup('aria-labelledby', ariaLabelledby, pageIndex, missingLabelledbyIds);
+    idRefGroups.push(group);
+    const resolved = group.items
+      .filter((item) => item.exists && item.text)
+      .map((item) => item.text)
+      .join(' ');
     components.ariaLabelledby = resolved || '"" (empty/unresolved)';
   }
 
@@ -483,7 +530,12 @@ function computeAccessibleData(
 
   const ariaDescribedby = el.getAttribute('aria-describedby');
   if (ariaDescribedby !== null) {
-    const resolved = resolveIdReferences(ariaDescribedby, pageIndex, missingDescribedbyIds);
+    const group = buildIdRefGroup('aria-describedby', ariaDescribedby, pageIndex, missingDescribedbyIds);
+    idRefGroups.push(group);
+    const resolved = group.items
+      .filter((item) => item.exists && item.text)
+      .map((item) => item.text)
+      .join(' ');
     components.ariaDescribedby = resolved || '"" (empty/unresolved)';
   }
 
@@ -492,9 +544,18 @@ function computeAccessibleData(
     components.ariaDescription = ariaDescription.trim() || '""';
   }
 
+  // Additional IDREF attributes (headers, aria-errormessage, aria-controls, aria-details)
+  for (const extraAttr of ['headers', 'aria-errormessage', 'aria-controls', 'aria-details']) {
+    const rawVal = el.getAttribute(extraAttr);
+    if (rawVal !== null && rawVal.trim() !== '') {
+      const group = buildIdRefGroup(extraAttr, rawVal, pageIndex, []);
+      idRefGroups.push(group);
+    }
+  }
+
   // Native <label> (explicit via for="" in O(1) or implicit ancestor <label>)
   if (LABELABLE_TAGS.has(tag) || LABELABLE_ROLES.has(role)) {
-    const labelText = resolveNativeLabel(el, pageIndex);
+    const labelText = resolveNativeLabel(el, pageIndex, idRefGroups);
     if (labelText !== null) {
       components.nativeLabel = labelText.trim() || '""';
     }
@@ -521,18 +582,18 @@ function computeAccessibleData(
     }
   }
 
-  // Table <caption>, Fieldset <legend>, Figure <figcaption>
-  if (tag === 'table') {
-    const caption = el.querySelector(':scope > caption');
+  // Table <caption> / [role="caption"], Fieldset <legend>, Figure <figcaption>
+  if (tag === 'table' || role === 'table' || role === 'grid' || role === 'treegrid') {
+    const caption = el.querySelector(':scope > caption, :scope > [role="caption"]');
     if (caption) {
       components.caption = extractVisibleText(caption, pageIndex).trim();
     }
-  } else if (tag === 'fieldset') {
+  } else if (tag === 'fieldset' || role === 'group' || role === 'radiogroup') {
     const legend = el.querySelector(':scope > legend');
     if (legend) {
       components.legend = extractVisibleText(legend, pageIndex).trim();
     }
-  } else if (tag === 'figure') {
+  } else if (tag === 'figure' || role === 'figure') {
     const figcaption = el.querySelector(':scope > figcaption');
     if (figcaption) {
       components.figcaption = extractVisibleText(figcaption, pageIndex).trim();
@@ -549,7 +610,7 @@ function computeAccessibleData(
     components.pseudoAfter = afterText;
   }
 
-  // Inner text for name-from-content elements
+  // Inner text for name-from-content elements (both native tags and semantic ARIA roles)
   if (NAME_FROM_CONTENT_ROLES.has(role) || NAME_FROM_CONTENT_TAGS.has(tag)) {
     const inner = extractVisibleText(el, pageIndex).trim();
     if (inner) {
@@ -562,7 +623,7 @@ function computeAccessibleData(
   if (titleAttr !== null) {
     components.title = titleAttr.trim() || '""';
   }
-  const placeholderAttr = el.getAttribute('placeholder');
+  const placeholderAttr = el.getAttribute('placeholder') || el.getAttribute('aria-placeholder');
   if (placeholderAttr !== null) {
     components.placeholder = placeholderAttr.trim() || '""';
   }
@@ -578,7 +639,7 @@ function computeAccessibleData(
   } else if (components.nativeLabel && components.nativeLabel !== '""') {
     accName = components.nativeLabel;
   } else if (
-    (tag === 'img' || tag === 'area' || (tag === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'image')) &&
+    (tag === 'img' || tag === 'area' || role === 'img' || (tag === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'image')) &&
     altAttr !== null &&
     altAttr.trim() !== ''
   ) {
@@ -616,7 +677,7 @@ function computeAccessibleData(
 
   // 4. Compute Grouping Context (<fieldset><legend> or role="group"/"radiogroup")
   let accGroup = '';
-  if (tag !== 'fieldset') {
+  if (tag !== 'fieldset' && role !== 'group' && role !== 'radiogroup') {
     const closestGroup = el.closest('fieldset, [role="radiogroup"], [role="group"]');
     if (closestGroup) {
       if (closestGroup.tagName.toLowerCase() === 'fieldset') {
@@ -631,19 +692,51 @@ function computeAccessibleData(
           accGroup = resolveIdReferences(groupLabelledby, pageIndex, []);
         } else if (groupLabel) {
           accGroup = groupLabel.trim();
+        } else {
+          const groupLegend = closestGroup.querySelector(':scope > legend');
+          if (groupLegend) {
+            accGroup = extractVisibleText(groupLegend, pageIndex).trim();
+          }
         }
       }
     }
   }
 
-  // 5. Add-on Properties & States
-  const addOnProps = collectAddOnProperties(el, role);
+  // 5. Semantic Table / Grid Association Computation (native <table> AND role="table"|"grid"|"treegrid")
+  const tableAssociation = computeTableSemanticAssociation(el, tag, role, pageIndex);
+  if (tableAssociation) {
+    if (tableAssociation.columnHeaders.length > 0) {
+      components.tableColumnHeaders = tableAssociation.columnHeaders.join(' | ');
+    }
+    if (tableAssociation.rowHeaders.length > 0) {
+      components.tableRowHeaders = tableAssociation.rowHeaders.join(' | ');
+    }
+    const tableTitle = tableAssociation.tableName ? `"${tableAssociation.tableName}"` : `<${tableAssociation.tableRole}>`;
+    if (tableAssociation.rowIndex !== null && tableAssociation.colIndex !== null) {
+      components.tableContext = `${tableTitle} (Row ${tableAssociation.rowIndex} of ${tableAssociation.rowCount}, Col ${tableAssociation.colIndex} of ${tableAssociation.colCount})`;
+    } else {
+      components.tableContext = `${tableTitle} (${tableAssociation.rowCount} rows × ${tableAssociation.colCount} cols)`;
+    }
+  }
+
+  // 6. Add-on Properties & States (including semantic ARIA states & list item context)
+  const addOnProps = collectAddOnProperties(el, role, pageIndex);
   const stateOutput = Object.values(addOnProps).filter(Boolean).join(', ');
 
-  // 6. Synthesize Screen Reader Output Preview
+  // 7. Synthesize Screen Reader Output Preview
   const outputParts = [];
   if (accGroup) {
     outputParts.push(`[Group: ${accGroup}]`);
+  }
+  if (tableAssociation && (tableAssociation.columnHeaders.length > 0 || tableAssociation.rowHeaders.length > 0)) {
+    const hdrParts = [];
+    if (tableAssociation.columnHeaders.length > 0) {
+      hdrParts.push(`Col: ${tableAssociation.columnHeaders.join(', ')}`);
+    }
+    if (tableAssociation.rowHeaders.length > 0) {
+      hdrParts.push(`Row: ${tableAssociation.rowHeaders.join(', ')}`);
+    }
+    outputParts.push(`[${hdrParts.join(' | ')}]`);
   }
   if (accName) {
     outputParts.push(accName);
@@ -651,9 +744,8 @@ function computeAccessibleData(
   if (accDesc && accDesc !== accName) {
     outputParts.push(accDesc);
   }
-  const semanticRoleLabel = role || getImplicitRoleLabel(el);
-  if (semanticRoleLabel) {
-    outputParts.push(`(${semanticRoleLabel})`);
+  if (semanticRole) {
+    outputParts.push(`(${semanticRole})`);
   }
   if (stateOutput) {
     outputParts.push(stateOutput);
@@ -663,22 +755,30 @@ function computeAccessibleData(
     accName,
     accDesc,
     accGroup,
+    semanticRole,
     screenReaderOutput: outputParts.join(' '),
     components,
     addOnProps,
     missingLabelledbyIds,
-    missingDescribedbyIds
+    missingDescribedbyIds,
+    idRefGroups,
+    tableAssociation
   };
 }
 
-function resolveIdReferences(
-  idListStr,
+/**
+ * Builds a structured IDREF resolution group for attributes such as
+ * `aria-labelledby`, `aria-describedby`, `headers`, `aria-errormessage`, `aria-controls`, etc.
+ */
+function buildIdRefGroup(
+  attribute,
+  rawValue,
   pageIndex,
   missingIdsOut
 ) {
-  const ids = idListStr.trim().split(/\s+/).filter(Boolean);
+  const ids = rawValue.trim().split(/\s+/).filter(Boolean);
+  const items = [];
   const seen = new Set();
-  const pieces = [];
 
   for (const id of ids) {
     if (seen.has(id)) {
@@ -688,30 +788,83 @@ function resolveIdReferences(
     const matches = pageIndex.idMap.get(id);
     if (!matches || matches.length === 0) {
       missingIdsOut.push(id);
+      items.push({
+        id,
+        attribute,
+        text: '',
+        exists: false,
+        targetSelector: null,
+        targetTag: null,
+        targetElement: null
+      });
       continue;
     }
     const target = matches[0];
     const targetLabel = target.getAttribute('aria-label')?.trim();
     const text = targetLabel || (target.textContent || '').replace(/\s+/g, ' ').trim();
-    if (text) {
-      pieces.push(text);
-    }
+    items.push({
+      id,
+      attribute,
+      text,
+      exists: true,
+      targetSelector: getElementSelector(target),
+      targetTag: formatTagName(target),
+      targetElement: target
+    });
   }
-  return pieces.join(' ');
+
+  return {
+    attribute,
+    rawValue: rawValue.trim(),
+    items
+  };
 }
 
-function resolveNativeLabel(el, pageIndex) {
+function resolveIdReferences(
+  idListStr,
+  pageIndex,
+  missingIdsOut
+) {
+  const group = buildIdRefGroup('idref', idListStr, pageIndex, missingIdsOut);
+  return group.items
+    .filter((item) => item.exists && item.text)
+    .map((item) => item.text)
+    .join(' ');
+}
+
+function resolveNativeLabel(
+  el,
+  pageIndex,
+  idRefGroupsOut
+) {
   const parts = [];
 
   // 1. Explicit <label for="id"> via O(1) Map lookup
   if (el.id) {
     const labels = pageIndex.labelForMap.get(el.id);
     if (labels && labels.length > 0) {
+      const labelItems = [];
       for (const lbl of labels) {
         const txt = extractVisibleText(lbl, pageIndex, el).trim();
         if (txt) {
           parts.push(txt);
         }
+        labelItems.push({
+          id: el.id,
+          attribute: 'label[for]',
+          text: txt,
+          exists: true,
+          targetSelector: getElementSelector(lbl),
+          targetTag: formatTagName(lbl),
+          targetElement: lbl
+        });
+      }
+      if (labelItems.length > 0) {
+        idRefGroupsOut.push({
+          attribute: 'label[for]',
+          rawValue: el.id,
+          items: labelItems
+        });
       }
     }
   }
@@ -729,6 +882,244 @@ function resolveNativeLabel(el, pageIndex) {
   }
 
   return parts.length > 0 ? parts.join(' ') : null;
+}
+
+/**
+ * Semantic Table / Grid Association Engine (Requirement #2):
+ * Detects table semantics and computes header-to-cell associations when either native
+ * `<table>`/`<tr>`/`<th>`/`<td>` tags OR ARIA `role="table"`/`role="grid"`/`role="treegrid"`,
+ * `role="row"`, `role="columnheader"`, `role="rowheader"`, `role="cell"`, `role="gridcell"`
+ * attributes are used.
+ */
+function computeTableSemanticAssociation(
+  el,
+  tag,
+  role,
+  pageIndex
+) {
+  const isTableContainer =
+    (tag === 'table' && role !== 'presentation' && role !== 'none') ||
+    role === 'table' ||
+    role === 'grid' ||
+    role === 'treegrid';
+
+  const isCellOrHeader =
+    tag === 'td' ||
+    tag === 'th' ||
+    role === 'cell' ||
+    role === 'gridcell' ||
+    role === 'columnheader' ||
+    role === 'rowheader';
+
+  if (!isTableContainer && !isCellOrHeader) {
+    return null;
+  }
+
+  const tableEl = isTableContainer
+    ? el
+    : (el.closest('table, [role="table"], [role="grid"], [role="treegrid"]'));
+
+  if (!tableEl) {
+    return null;
+  }
+
+  const tableExplicitRole = getValidRole(tableEl);
+  if (tableExplicitRole === 'presentation' || tableExplicitRole === 'none') {
+    return null;
+  }
+
+  const tableRole = tableExplicitRole === 'grid'
+      ? 'grid'
+      : tableExplicitRole === 'treegrid'
+        ? 'treegrid'
+        : 'table';
+
+  // Resolve table accessible name (aria-labelledby, aria-label, caption, [role="caption"])
+  let tableName = '';
+  const tLby = tableEl.getAttribute('aria-labelledby');
+  const tLbl = tableEl.getAttribute('aria-label');
+  const tCaption = tableEl.querySelector(':scope > caption, :scope > [role="caption"]');
+  if (tLby) {
+    tableName = resolveIdReferences(tLby, pageIndex, []);
+  } else if (tLbl) {
+    tableName = tLbl.trim();
+  } else if (tCaption) {
+    tableName = extractVisibleText(tCaption, pageIndex).trim();
+  }
+
+  // Gather semantic rows belonging directly to this table/grid
+  const allRows = Array.from(tableEl.querySelectorAll('tr, [role="row"]')).filter(
+    (r) => r.closest('table, [role="table"], [role="grid"], [role="treegrid"]') === tableEl
+  );
+
+  const rowMatrix = [];
+  for (const r of allRows) {
+    const cells = Array.from(
+      r.querySelectorAll('th, td, [role="columnheader"], [role="rowheader"], [role="cell"], [role="gridcell"]')
+    ).filter((c) => c.closest('tr, [role="row"]') === r);
+    if (cells.length > 0) {
+      rowMatrix.push(cells);
+    }
+  }
+
+  const rowCount = Number(tableEl.getAttribute('aria-rowcount')) || rowMatrix.length;
+  const maxCols = rowMatrix.reduce((max, r) => Math.max(max, r.length), 0);
+  const colCount = Number(tableEl.getAttribute('aria-colcount')) || maxCols;
+
+  const isColHeaderCell = (cell) => {
+    const cRole = getValidRole(cell);
+    const cTag = cell.tagName.toLowerCase();
+    const scope = (cell.getAttribute('scope') || '').toLowerCase();
+    if (cRole === 'columnheader') return true;
+    if (cRole === 'rowheader' || cRole === 'cell' || cRole === 'gridcell') return false;
+    if (cTag === 'th') {
+      return scope !== 'row' && scope !== 'rowgroup';
+    }
+    return false;
+  };
+
+  const isRowHeaderCell = (cell) => {
+    const cRole = getValidRole(cell);
+    const cTag = cell.tagName.toLowerCase();
+    const scope = (cell.getAttribute('scope') || '').toLowerCase();
+    if (cRole === 'rowheader') return true;
+    if (cRole === 'columnheader') return false;
+    if (cTag === 'th' && (scope === 'row' || scope === 'rowgroup')) return true;
+    return false;
+  };
+
+  // If inspecting the table container itself, summarize all column & row headers in the table
+  if (isTableContainer) {
+    const colHeaderTexts = [];
+    const rowHeaderTexts = [];
+    for (const row of rowMatrix) {
+      for (const cell of row) {
+        const txt = extractCellHeaderText(cell, pageIndex);
+        if (!txt) continue;
+        if (isColHeaderCell(cell) && !colHeaderTexts.includes(txt)) {
+          colHeaderTexts.push(txt);
+        } else if (isRowHeaderCell(cell) && !rowHeaderTexts.includes(txt)) {
+          rowHeaderTexts.push(txt);
+        }
+      }
+    }
+    return {
+      tableRole,
+      tableName,
+      columnHeaders: colHeaderTexts,
+      rowHeaders: rowHeaderTexts,
+      rowIndex: null,
+      colIndex: null,
+      rowCount,
+      colCount
+    };
+  }
+
+  // Otherwise, inspecting a specific cell or header cell: find its row & column coordinates
+  let targetRowIdx = -1;
+  let targetColIdx = -1;
+  for (let rIdx = 0; rIdx < rowMatrix.length; rIdx++) {
+    const cIdx = rowMatrix[rIdx].indexOf(el);
+    if (cIdx !== -1) {
+      targetRowIdx = rIdx;
+      targetColIdx = cIdx;
+      break;
+    }
+  }
+
+  const columnHeaders = [];
+  const rowHeaders = [];
+
+  // 1. Check explicit `headers="id1 id2"` attribute first
+  const explicitHeadersAttr = el.getAttribute('headers');
+  if (explicitHeadersAttr && explicitHeadersAttr.trim()) {
+    const ids = explicitHeadersAttr.trim().split(/\s+/).filter(Boolean);
+    for (const id of ids) {
+      const matches = pageIndex.idMap.get(id);
+      if (matches && matches.length > 0) {
+        const hdrEl = matches[0];
+        const txt = extractCellHeaderText(hdrEl, pageIndex);
+        if (txt) {
+          if (isRowHeaderCell(hdrEl)) {
+            rowHeaders.push(txt);
+          } else {
+            columnHeaders.push(txt);
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Positional column header resolution (works for both <th> and [role="columnheader"])
+  if (columnHeaders.length === 0 && targetColIdx !== -1) {
+    const explicitColIndex = el.getAttribute('aria-colindex');
+    for (let rIdx = 0; rIdx < rowMatrix.length; rIdx++) {
+      if (rIdx === targetRowIdx) continue;
+      const row = rowMatrix[rIdx];
+      let matchedHeader = null;
+      if (explicitColIndex) {
+        matchedHeader =
+          row.find((c) => c.getAttribute('aria-colindex') === explicitColIndex && isColHeaderCell(c)) || null;
+      }
+      if (!matchedHeader && targetColIdx < row.length) {
+        const candidate = row[targetColIdx];
+        if (candidate && isColHeaderCell(candidate)) {
+          matchedHeader = candidate;
+        }
+      }
+      if (matchedHeader && matchedHeader !== el) {
+        const txt = extractCellHeaderText(matchedHeader, pageIndex);
+        if (txt && !columnHeaders.includes(txt)) {
+          columnHeaders.push(txt);
+        }
+      }
+    }
+  }
+
+  // 3. Positional row header resolution (works for <th scope="row"> and [role="rowheader"])
+  if (rowHeaders.length === 0 && targetRowIdx !== -1) {
+    const currentRow = rowMatrix[targetRowIdx];
+    for (let cIdx = 0; cIdx < currentRow.length; cIdx++) {
+      const candidate = currentRow[cIdx];
+      if (candidate === el) continue;
+      const isFirstColTh =
+        cIdx === 0 &&
+        candidate.tagName.toLowerCase() === 'th' &&
+        (candidate.getAttribute('scope') || '').toLowerCase() !== 'col' &&
+        !currentRow.every((cell) => isColHeaderCell(cell));
+      if (isRowHeaderCell(candidate) || isFirstColTh) {
+        const txt = extractCellHeaderText(candidate, pageIndex);
+        if (txt && !rowHeaders.includes(txt)) {
+          rowHeaders.push(txt);
+        }
+      }
+    }
+  }
+
+  const ariaRowIdx = Number(el.getAttribute('aria-rowindex') || el.closest('[role="row"], tr')?.getAttribute('aria-rowindex'));
+  const ariaColIdx = Number(el.getAttribute('aria-colindex'));
+
+  return {
+    tableRole,
+    tableName,
+    columnHeaders,
+    rowHeaders,
+    rowIndex: ariaRowIdx || (targetRowIdx !== -1 ? targetRowIdx + 1 : null),
+    colIndex: ariaColIdx || (targetColIdx !== -1 ? targetColIdx + 1 : null),
+    rowCount,
+    colCount
+  };
+}
+
+function extractCellHeaderText(cell, pageIndex) {
+  const ariaLbl = cell.getAttribute('aria-label')?.trim();
+  if (ariaLbl) return ariaLbl;
+  const ariaLby = cell.getAttribute('aria-labelledby');
+  if (ariaLby) {
+    const resolved = resolveIdReferences(ariaLby, pageIndex, []);
+    if (resolved) return resolved;
+  }
+  return extractVisibleText(cell, pageIndex).trim();
 }
 
 /**
@@ -764,8 +1155,8 @@ function extractVisibleText(
     if (el.getAttribute('aria-hidden') === 'true' || !isElementVisible(el, pageIndex.getStyle)) {
       return;
     }
-    if (tag === 'img' || tag === 'area') {
-      const alt = el.getAttribute('alt');
+    if (tag === 'img' || tag === 'area' || getValidRole(el) === 'img') {
+      const alt = el.getAttribute('alt') || el.getAttribute('aria-label');
       if (alt) {
         chunks.push(` ${alt.trim()} `);
       }
@@ -803,7 +1194,11 @@ function getPseudoElementText(el, pseudo) {
   return raw.replace(/^["']|["']$/g, '').trim();
 }
 
-function collectAddOnProperties(el, role) {
+function collectAddOnProperties(
+  el,
+  role,
+  pageIndex
+) {
   const props = {};
   const tag = el.tagName.toLowerCase();
 
@@ -825,7 +1220,8 @@ function collectAddOnProperties(el, role) {
   }
   const ariaChecked = el.getAttribute('aria-checked');
   if (ariaChecked) {
-    props['aria-checked'] = ariaChecked === 'true' ? 'checked' : ariaChecked === 'mixed' ? 'partially checked' : 'not checked';
+    props['aria-checked'] =
+      ariaChecked === 'true' ? 'checked' : ariaChecked === 'mixed' ? 'partially checked' : 'not checked';
   } else if (tag === 'input') {
     const type = (el.getAttribute('type') || '').toLowerCase();
     if (type === 'checkbox' || type === 'radio') {
@@ -833,13 +1229,35 @@ function collectAddOnProperties(el, role) {
     }
   }
   const ariaPressed = el.getAttribute('aria-pressed');
-  if (ariaPressed === 'true' || ariaPressed === 'false') {
-    props['aria-pressed'] = ariaPressed === 'true' ? 'pressed' : 'not pressed';
+  if (ariaPressed === 'true' || ariaPressed === 'false' || ariaPressed === 'mixed') {
+    props['aria-pressed'] =
+      ariaPressed === 'true' ? 'pressed' : ariaPressed === 'mixed' ? 'partially pressed' : 'not pressed';
+  }
+  const ariaSelected = el.getAttribute('aria-selected');
+  if (ariaSelected === 'true' || ariaSelected === 'false') {
+    props['aria-selected'] = ariaSelected === 'true' ? 'selected' : 'not selected';
+  }
+  const ariaCurrent = el.getAttribute('aria-current');
+  if (ariaCurrent && ariaCurrent !== 'false') {
+    props['aria-current'] = `current ${ariaCurrent}`;
   }
   if (role === 'heading' || /^h[1-6]$/.test(tag)) {
     const level = el.getAttribute('aria-level') || (tag.startsWith('h') ? tag.charAt(1) : '2');
     props['heading-level'] = `heading level ${level}`;
   }
+  if (tag === 'li' || role === 'listitem') {
+    const listContainer = el.closest('ul, ol, menu, [role="list"]');
+    if (listContainer) {
+      const items = Array.from(listContainer.querySelectorAll('li, [role="listitem"]')).filter(
+        (item) => item.closest('ul, ol, menu, [role="list"]') === listContainer
+      );
+      const pos = items.indexOf(el);
+      if (pos !== -1) {
+        props['list-position'] = `${pos + 1} of ${items.length}`;
+      }
+    }
+  }
+  void pageIndex;
   return props;
 }
 
@@ -849,6 +1267,7 @@ function getImplicitRoleLabel(el) {
     case 'a':
       return el.hasAttribute('href') ? 'link' : '';
     case 'button':
+    case 'summary':
       return 'button';
     case 'select':
       return 'combobox';
@@ -856,20 +1275,69 @@ function getImplicitRoleLabel(el) {
       return 'textbox';
     case 'img':
       return 'graphic';
+    case 'svg':
+      return 'graphic';
     case 'table':
       return 'table';
+    case 'th': {
+      const scope = (el.getAttribute('scope') || '').toLowerCase();
+      return scope === 'row' || scope === 'rowgroup' ? 'rowheader' : 'columnheader';
+    }
+    case 'td':
+      return 'cell';
+    case 'tr':
+      return 'row';
+    case 'ul':
+    case 'ol':
+    case 'menu':
+      return 'list';
+    case 'li':
+      return 'listitem';
+    case 'h1':
+    case 'h2':
+    case 'h3':
+    case 'h4':
+    case 'h5':
+    case 'h6':
+      return 'heading';
+    case 'main':
+      return 'main';
+    case 'nav':
+      return 'navigation';
+    case 'aside':
+      return 'complementary';
+    case 'header':
+      return 'banner';
+    case 'footer':
+      return 'contentinfo';
+    case 'form':
+      return 'form';
+    case 'search':
+      return 'search';
+    case 'section':
+      return el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby') ? 'region' : '';
+    case 'dialog':
+      return 'dialog';
+    case 'fieldset':
+      return 'group';
+    case 'figure':
+      return 'figure';
+    case 'iframe':
+      return 'iframe';
     case 'input': {
       const t = (el.getAttribute('type') || 'text').toLowerCase();
       if (t === 'checkbox') return 'checkbox';
       if (t === 'radio') return 'radio button';
-      if (t === 'submit' || t === 'button' || t === 'reset') return 'button';
+      if (t === 'submit' || t === 'button' || t === 'reset' || t === 'image') return 'button';
+      if (t === 'search') return 'searchbox';
+      if (t === 'range') return 'slider';
+      if (t === 'number') return 'spinbutton';
       return 'textbox';
     }
     default:
       return '';
   }
 }
-
 
   // === Module: src/notes-report.ts ===
 /**
@@ -1833,12 +2301,14 @@ function evaluateLinkOrButtonElement(
 
   // === Module: andi/tandi.ts ===
 /**
- * tANDI — Data Tables Inspector Module (TypeScript)
+ * tANDI — Data Tables & Semantic ARIA Grids Inspector Module (TypeScript)
  * Refactored from legacy tandi.js into strict, zero-dependency TypeScript.
+ * Supports both native <table>/<tr>/<th>/<td> and ARIA role="table"|"grid"|"treegrid",
+ * role="row", role="columnheader", role="rowheader", role="cell", role="gridcell".
  */
 
 
-const TANDI_VERSION = '8.0.0-ts';
+const TANDI_VERSION = '8.1.0-ts';
 
 function evaluateTableElement(
   el,
@@ -1848,7 +2318,20 @@ function evaluateTableElement(
 ) {
   const alerts = [];
 
-  if (tag === 'table' && role !== 'presentation' && role !== 'none') {
+  const isTableContainer =
+    (tag === 'table' && role !== 'presentation' && role !== 'none') ||
+    role === 'table' ||
+    role === 'grid' ||
+    role === 'treegrid';
+
+  const isHeaderCell =
+    tag === 'th' || role === 'columnheader' || role === 'rowheader';
+
+  const isDataCell =
+    tag === 'td' || role === 'cell' || role === 'gridcell';
+
+  if (isTableContainer) {
+    const labelDescriptor = tag === 'table' ? 'Data <table>' : `Semantic [role="${role}"] table`;
     const thCount = el.querySelectorAll('th, [role="columnheader"], [role="rowheader"]').length;
     if (thCount === 0) {
       alerts.push({
@@ -1856,7 +2339,17 @@ function evaluateTableElement(
         code: 'ALERT_TABLE_NO_TH',
         level: 'danger',
         module: 't',
-        message: 'Data <table> has no <th> header cells or [role="columnheader"/"rowheader"].'
+        message: `${labelDescriptor} has no <th> header cells or [role="columnheader"/"rowheader"].`
+      });
+    }
+    const rowCount = el.querySelectorAll('tr, [role="row"]').length;
+    if (rowCount === 0) {
+      alerts.push({
+        id: 't-no-rows',
+        code: 'ALERT_TABLE_NO_ROWS',
+        level: 'danger',
+        module: 't',
+        message: `${labelDescriptor} has no <tr> or [role="row"] elements.`
       });
     }
     const hasScope = el.querySelectorAll('th[scope]').length > 0;
@@ -1876,17 +2369,51 @@ function evaluateTableElement(
         code: 'ALERT_TABLE_NO_NAME',
         level: 'caution',
         module: 't',
-        message: 'Data <table> has no accessible name, <caption>, or aria-label.'
+        message: `${labelDescriptor} has no accessible name, <caption>, aria-label, or aria-labelledby.`
       });
     }
-  } else if (tag === 'th' && !computed.accName) {
-    alerts.push({
-      id: 't-empty-th',
-      code: 'ALERT_EMPTY_TH',
-      level: 'caution',
-      module: 't',
-      message: 'Empty <th> table header cell.'
-    });
+  } else if (isHeaderCell) {
+    if (!computed.accName) {
+      const hdrDesc = tag === 'th' ? '<th>' : `[role="${role}"]`;
+      alerts.push({
+        id: 't-empty-th',
+        code: 'ALERT_EMPTY_TH',
+        level: 'caution',
+        module: 't',
+        message: `Empty ${hdrDesc} table header cell.`
+      });
+    }
+  } else if (isDataCell) {
+    // Check for broken [headers] IDREF references
+    const headersGroup = computed.idRefGroups.find((g) => g.attribute === 'headers');
+    if (headersGroup) {
+      const missingIds = headersGroup.items.filter((i) => !i.exists).map((i) => i.id);
+      if (missingIds.length > 0) {
+        alerts.push({
+          id: 't-missing-headers-ref',
+          code: 'ALERT_MISSING_HEADERS_REF',
+          level: 'danger',
+          module: 't',
+          message: `[headers] attribute references missing ID(s): "${missingIds.join(', ')}".`
+        });
+      }
+    }
+    // Check if cell is inside a semantic table/grid but has no associated headers
+    if (
+      computed.tableAssociation &&
+      computed.tableAssociation.columnHeaders.length === 0 &&
+      computed.tableAssociation.rowHeaders.length === 0 &&
+      computed.accName
+    ) {
+      const cellDesc = tag === 'td' ? '<td>' : `[role="${role}"]`;
+      alerts.push({
+        id: 't-cell-no-headers',
+        code: 'ALERT_CELL_NO_HEADERS',
+        level: 'caution',
+        module: 't',
+        message: `Table cell ${cellDesc} has no associated column or row headers (<th> or [role="columnheader"/"rowheader"]).`
+      });
+    }
   }
 
   return alerts;
@@ -2084,11 +2611,31 @@ function evaluateIframeElement(
 
   // === Module: src/analyzers.ts ===
 /**
- * ANDI-Gen1 — Multi-Module Accessibility Analysis Engine
+ * ANDI-Gen1 — Multi-Module Accessibility Analysis & Element Inventory Engine
  * Supports running individual modules (f, g, l, t, s, c, h, i) OR the unified
- * `'all'` mode (placed as the last option in the mode droplist), plus iframe detection.
+ * `'all'` mode (placed as the last option in the mode droplist), semantic ARIA role
+ * detection, and building the full Element Inventory array for the Fly-In Drawer.
  */
 
+
+const INTERACTIVE_ARIA_WIDGET_ROLES = new Set([
+  'button', 'link', 'textbox', 'searchbox', 'combobox', 'listbox', 'option',
+  'checkbox', 'radio', 'switch', 'slider', 'spinbutton', 'tab', 'menuitem',
+  'menuitemcheckbox', 'menuitemradio', 'treeitem'
+]);
+
+const FORM_CONTROL_ROLES = new Set([
+  'textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio',
+  'switch', 'slider', 'spinbutton'
+]);
+
+const LANDMARK_TAGS = new Set([
+  'main', 'nav', 'header', 'footer', 'aside', 'form', 'region', 'search'
+]);
+
+const LANDMARK_ROLES = new Set([
+  'banner', 'navigation', 'main', 'contentinfo', 'complementary', 'region', 'search', 'form'
+]);
 
 function analyzePage(
   pageIndex,
@@ -2203,8 +2750,10 @@ function analyzePage(
       index: elementCounter,
       element: el,
       selector,
+      domSnippet: extractDomNodeSnippet(el),
       tagName: formatTagName(el),
       role,
+      semanticRole: computed.semanticRole,
       isFocusable: focusInfo.isFocusable,
       isTabbable: focusInfo.isTabbable,
       tabIndexValue: focusInfo.tabIndexValue,
@@ -2215,6 +2764,8 @@ function analyzePage(
       screenReaderOutput: computed.screenReaderOutput,
       addOnProps: computed.addOnProps,
       components: computed.components,
+      idRefGroups: computed.idRefGroups,
+      tableAssociation: computed.tableAssociation,
       alerts,
       modulesMatched: matchedModules,
       note: existingNote,
@@ -2287,6 +2838,227 @@ function analyzePage(
   return records;
 }
 
+/**
+ * Builds a categorized array of interface elements on the page for the
+ * Element Inventory Fly-In Drawer (tables, links, buttons, formControls, landmarks,
+ * headings, graphics, dialogsLive, iframes).
+ */
+function buildPageInventory(
+  pageIndex,
+  records
+) {
+  const recordByElement = new Map();
+  for (const r of records) {
+    recordByElement.set(r.element, r);
+  }
+
+  const inventory = [];
+  let invId = 0;
+
+  for (const el of pageIndex.visibleElements) {
+    const tag = el.tagName.toLowerCase();
+    const role = getValidRole(el);
+    const rec = recordByElement.get(el) || null;
+
+    const categories = classifyInventoryCategories(el, tag, role);
+    if (categories.length === 0) {
+      continue;
+    }
+
+    const computed = rec ? null : computeAccessibleData(el, pageIndex);
+    const accName = rec ? rec.accName : computed.accName;
+    const accDesc = rec ? rec.accDesc : computed.accDesc;
+    const semanticRole = rec ? rec.semanticRole : computed.semanticRole;
+    const domSnippet = rec ? rec.domSnippet : extractDomNodeSnippet(el);
+    const selector = rec ? rec.selector : getElementSelector(el);
+    const coordinates = rec ? rec.coordinates : getElementCoordinates(el);
+    const alertCount = rec ? rec.alerts.length : 0;
+    const tableAssoc = rec ? rec.tableAssociation : computed.tableAssociation;
+
+    for (const category of categories) {
+      invId += 1;
+      const details = formatInventoryDetails(el, tag, role, category, tableAssoc);
+      inventory.push({
+        id: `inv-${invId}`,
+        category,
+        inspectedIndex: rec ? rec.index : null,
+        element: el,
+        tagName: formatTagName(el),
+        role,
+        semanticRole: semanticRole || role || tag,
+        domSnippet,
+        selector,
+        accName,
+        accDesc,
+        details,
+        alertCount,
+        coordinates
+      });
+    }
+  }
+
+  return inventory;
+}
+
+function classifyInventoryCategories(
+  el,
+  tag,
+  role
+) {
+  const cats = [];
+
+  // 1. Tables & Semantic ARIA Tables/Grids (plus table cells/headers if part of table structure)
+  if (
+    (tag === 'table' && role !== 'presentation' && role !== 'none') ||
+    role === 'table' ||
+    role === 'grid' ||
+    role === 'treegrid'
+  ) {
+    cats.push('tables');
+  }
+
+  // 2. Links
+  if (tag === 'a' || role === 'link') {
+    cats.push('links');
+  }
+
+  // 3. Buttons
+  const inputType = tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
+  if (
+    tag === 'button' ||
+    role === 'button' ||
+    tag === 'summary' ||
+    (tag === 'input' && ['button', 'submit', 'reset', 'image'].includes(inputType))
+  ) {
+    cats.push('buttons');
+  }
+
+  // 4. Form Controls (Native & ARIA widget roles)
+  if (
+    (tag === 'input' && !['button', 'submit', 'reset', 'image', 'hidden'].includes(inputType)) ||
+    tag === 'select' ||
+    tag === 'textarea' ||
+    tag === 'meter' ||
+    tag === 'progress' ||
+    tag === 'output' ||
+    FORM_CONTROL_ROLES.has(role)
+  ) {
+    cats.push('formControls');
+  }
+
+  // 5. Landmarks
+  if (
+    LANDMARK_TAGS.has(tag) ||
+    LANDMARK_ROLES.has(role) ||
+    (tag === 'section' && (el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby')))
+  ) {
+    cats.push('landmarks');
+  }
+
+  // 6. Headings
+  if (/^h[1-6]$/.test(tag) || role === 'heading') {
+    cats.push('headings');
+  }
+
+  // 7. Graphics
+  if (
+    tag === 'img' ||
+    tag === 'svg' ||
+    tag === 'canvas' ||
+    tag === 'area' ||
+    role === 'img' ||
+    role === 'image' ||
+    role === 'figure' ||
+    tag === 'figure'
+  ) {
+    cats.push('graphics');
+  }
+
+  // 8. Dialogs, Lists & Live Regions
+  if (
+    tag === 'dialog' ||
+    role === 'dialog' ||
+    role === 'alertdialog' ||
+    el.hasAttribute('aria-live') ||
+    ['alert', 'status', 'log', 'marquee', 'timer'].includes(role)
+  ) {
+    cats.push('dialogsLive');
+  }
+
+  // 9. Iframes
+  if (tag === 'iframe') {
+    cats.push('iframes');
+  }
+
+  return cats;
+}
+
+function formatInventoryDetails(
+  el,
+  tag,
+  role,
+  category,
+  tableAssoc
+) {
+  switch (category) {
+    case 'tables': {
+      const kind = tag === 'table' ? '<table>' : `[role="${role}"]`;
+      if (tableAssoc) {
+        const hdrs = [...tableAssoc.columnHeaders, ...tableAssoc.rowHeaders];
+        const hdrSummary = hdrs.length > 0 ? `Headers: ${hdrs.slice(0, 5).join(', ')}` : 'No headers detected';
+        return `${kind} • ${tableAssoc.rowCount} rows × ${tableAssoc.colCount} cols • ${hdrSummary}`;
+      }
+      return kind;
+    }
+    case 'links': {
+      const href = el.getAttribute('href');
+      return href ? `href="${href}"` : role === 'link' ? '[role="link"] (no href)' : '<a> (no href)';
+    }
+    case 'buttons': {
+      const ariaExpanded = el.getAttribute('aria-expanded');
+      const ariaPressed = el.getAttribute('aria-pressed');
+      const extra = [];
+      if (role === 'button' && tag !== 'button') extra.push(`<${tag} role="button">`);
+      if (ariaExpanded) extra.push(`expanded=${ariaExpanded}`);
+      if (ariaPressed) extra.push(`pressed=${ariaPressed}`);
+      return extra.join(' • ') || `<${formatTagName(el)}>`;
+    }
+    case 'formControls': {
+      const extra = [];
+      if (role && FORM_CONTROL_ROLES.has(role) && !['input', 'select', 'textarea'].includes(tag)) {
+        extra.push(`<${tag} role="${role}">`);
+      } else {
+        extra.push(`<${formatTagName(el)}>`);
+      }
+      if (el.hasAttribute('required') || el.getAttribute('aria-required') === 'true') {
+        extra.push('required');
+      }
+      return extra.join(' • ');
+    }
+    case 'landmarks': {
+      const lmRole = role || (tag === 'header' ? 'banner' : tag === 'footer' ? 'contentinfo' : tag === 'nav' ? 'navigation' : tag === 'aside' ? 'complementary' : tag);
+      return `Landmark: ${lmRole} (<${tag}>)`;
+    }
+    case 'headings': {
+      const lvl = el.getAttribute('aria-level') || (/^h[1-6]$/.test(tag) ? tag.charAt(1) : '2');
+      return `Level H${lvl} (${role === 'heading' && !/^h[1-6]$/.test(tag) ? `<${tag} role="heading" aria-level="${lvl}">` : `<${tag}>`})`;
+    }
+    case 'graphics': {
+      const alt = el.getAttribute('alt');
+      if (alt === '') return 'Decorative (alt="")';
+      return `<${tag}${role ? ` role="${role}"` : ''}>`;
+    }
+    case 'dialogsLive': {
+      const live = el.getAttribute('aria-live');
+      return live ? `aria-live="${live}"` : `role="${role || tag}"`;
+    }
+    case 'iframes': {
+      const src = el.getAttribute('src') || '(inline srcdoc)';
+      return `src="${src}"`;
+    }
+  }
+}
+
 function getMatchedModulesForElement(
   el,
   tag,
@@ -2310,7 +3082,7 @@ function getMatchedModulesForElement(
     }
   }
 
-  if (isFocusable || tag === 'canvas') {
+  if (isFocusable || tag === 'canvas' || INTERACTIVE_ARIA_WIDGET_ROLES.has(role)) {
     matched.push('f');
   }
 
@@ -2319,8 +3091,10 @@ function getMatchedModulesForElement(
     tag === 'svg' ||
     tag === 'canvas' ||
     tag === 'area' ||
+    tag === 'figure' ||
     role === 'img' ||
     role === 'image' ||
+    role === 'figure' ||
     (tag === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'image')
   ) {
     matched.push('g');
@@ -2337,18 +3111,33 @@ function getMatchedModulesForElement(
     matched.push('l');
   }
 
-  if (tag === 'table' || role === 'table' || role === 'grid' || tag === 'th' || tag === 'td') {
+  if (
+    tag === 'table' ||
+    role === 'table' ||
+    role === 'grid' ||
+    role === 'treegrid' ||
+    tag === 'th' ||
+    tag === 'td' ||
+    role === 'columnheader' ||
+    role === 'rowheader' ||
+    role === 'cell' ||
+    role === 'gridcell'
+  ) {
     matched.push('t');
   }
 
   if (
     /^h[1-6]$/.test(tag) ||
     role === 'heading' ||
-    ['main', 'nav', 'header', 'footer', 'aside', 'form', 'region', 'search'].includes(tag) ||
-    ['banner', 'navigation', 'main', 'contentinfo', 'complementary', 'region', 'search', 'form'].includes(role) ||
+    LANDMARK_TAGS.has(tag) ||
+    LANDMARK_ROLES.has(role) ||
+    (tag === 'section' && (el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby'))) ||
     el.hasAttribute('aria-live') ||
-    ['alert', 'status', 'log', 'marquee', 'timer'].includes(role) ||
-    tag === 'li'
+    ['alert', 'status', 'log', 'marquee', 'timer', 'dialog', 'alertdialog'].includes(role) ||
+    tag === 'dialog' ||
+    tag === 'li' ||
+    role === 'listitem' ||
+    role === 'list'
   ) {
     matched.push('s');
   }
@@ -2378,6 +3167,20 @@ function runFocusableChecks(
   for (const a of fAlerts) {
     alerts.push(a);
   }
+  if (
+    role &&
+    FORM_CONTROL_ROLES.has(role) &&
+    !focusInfo.isFocusable &&
+    el.getAttribute('aria-disabled') !== 'true'
+  ) {
+    pushAlert(
+      alerts,
+      'f',
+      'ALERT_ARIA_WIDGET_NOT_FOCUSABLE',
+      'warning',
+      `Semantic ARIA control [role="${role}"] on <${tag}> is not keyboard focusable (missing tabindex="0").`
+    );
+  }
   if (computed.accName.length > 250) {
     pushAlert(
       alerts,
@@ -2387,7 +3190,6 @@ function runFocusableChecks(
       `Accessible name length (${computed.accName.length} chars) exceeds 250 characters; consider condensing.`
     );
   }
-  void role;
 }
 
 function runGraphicsChecks(
@@ -2462,22 +3264,19 @@ function prevHeadingCheck(
         's',
         'ALERT_EMPTY_HEADING',
         'danger',
-        `Heading <${tag}> has no text content or accessible name.`
+        `Heading <${tag}${role === 'heading' ? ' role="heading"' : ''}> has no text content or accessible name.`
       );
     }
-  } else if (tag === 'li') {
-    const listParent = el.parentElement;
-    if (
-      listParent &&
-      !['ul', 'ol', 'menu'].includes(listParent.tagName.toLowerCase()) &&
-      !['list', 'menu', 'menubar', 'tablist'].includes(getValidRole(listParent))
-    ) {
+  } else if (tag === 'li' || role === 'listitem') {
+    const listParent = el.closest('ul, ol, menu, [role="list"], [role="menu"], [role="menubar"], [role="tablist"]');
+    if (!listParent) {
+      const desc = tag === 'li' ? '<li>' : `[role="listitem"]`;
       pushAlert(
         alerts,
         's',
         'ALERT_ORPHAN_LI',
         'danger',
-        `<li> element is not contained within a semantic list container (<ul>, <ol>, or [role="list"]).`
+        `${desc} element is not contained within a semantic list container (<ul>, <ol>, or [role="list"]).`
       );
     }
   }
@@ -2687,9 +3486,11 @@ const MODULE_LABELS = {
 
 class AndiGen1Controller {
   records = [];
+  inventoryItems = [];
   elementToRecord = new WeakMap();
   activeIndex = 0;
   laserEnabled = true;
+  highlightedIdRefEl = null;
 
   // Theme & Dock settings
   theme = 'dark';
@@ -2713,6 +3514,10 @@ class AndiGen1Controller {
 
   // Fly-in Note Drawer References
   currentScreenshotDataUrl = '';
+
+  // Fly-in Element Inventory Drawer References
+  activeInventoryCategory = 'all';
+  inventorySearchQuery = '';
 
   // Modals (CSP Resolver & Visual/Code Defect Report)
 
@@ -2855,11 +3660,12 @@ class AndiGen1Controller {
     this.clearPageElementMarkers(this.activeDocument);
     this.elementToRecord = new WeakMap();
 
-    const pageIndex = buildPageIndex(this.activeDocument);
+    const pageIndex = buildPageIndex(this.activeDocument.body);
     this.detectedIframes = pageIndex.iframes;
     this.populateIframeStepperDropdown();
 
     this.records = analyzePage(pageIndex, this.mode, this.activeFrameLabel);
+    this.inventoryItems = buildPageInventory(pageIndex, this.records);
 
     for (const rec of this.records) {
       this.elementToRecord.set(rec.element, rec);
@@ -2874,6 +3680,7 @@ class AndiGen1Controller {
 
     this.renderPageSummaryAndAlerts();
     this.renderAllNotesListInDrawer();
+    this.renderInventoryDrawer();
 
     if (this.records.length > 0) {
       this.inspectByIndex(1, false);
@@ -2911,15 +3718,56 @@ class AndiGen1Controller {
 
   clearPageElementMarkers(doc) {
     const marked = doc.querySelectorAll(
-      '[data-andi508-index], [data-andi-active], [data-andi-highlight]'
+      '[data-andi508-index], [data-andi-active], [data-andi-highlight], [data-andi-idref-target], [data-andi-pulse-target]'
     );
     marked.forEach((el) => {
       el.removeAttribute('data-andi508-index');
       el.removeAttribute('data-andi-active');
       el.removeAttribute('data-andi-highlight');
       el.removeAttribute('data-andi-alert-level');
+      el.removeAttribute('data-andi-idref-target');
+      el.removeAttribute('data-andi-pulse-target');
     });
+    this.highlightedIdRefEl = null;
     this.eraseLaser();
+  }
+
+  /**
+   * Navigates directly to any DOM element on the page (from the Screen Reader Output DOM Node link,
+   * an IDREF link such as aria-labelledby/aria-describedby, or the Element Inventory Fly-In Drawer).
+   * Scrolls the element smoothly into view, focuses it, pulses its outline, draws the SVG laser beam,
+   * and exposes `window.$andiActiveNode` for instant DevTools inspection.
+   */
+  navigateToDomElement(targetEl) {
+    if (this.highlightedIdRefEl && this.highlightedIdRefEl !== targetEl) {
+      this.highlightedIdRefEl.removeAttribute('data-andi-idref-target');
+      this.highlightedIdRefEl.removeAttribute('data-andi-pulse-target');
+    }
+
+    (window).$andiActiveNode = targetEl;
+
+    const existingRec = this.elementToRecord.get(targetEl);
+    if (existingRec) {
+      this.inspectByIndex(existingRec.index, true);
+    } else {
+      targetEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      const hadTabindex = targetEl.hasAttribute('tabindex');
+      if (!hadTabindex) {
+        targetEl.setAttribute('tabindex', '-1');
+      }
+      targetEl.focus({ preventScroll: true });
+      if (!hadTabindex) {
+        targetEl.removeAttribute('tabindex');
+      }
+      targetEl.setAttribute('data-andi-idref-target', 'true');
+      this.highlightedIdRefEl = targetEl;
+      this.drawLaserToElement(targetEl);
+    }
+
+    targetEl.setAttribute('data-andi-pulse-target', 'true');
+    setTimeout(() => {
+      targetEl.removeAttribute('data-andi-pulse-target');
+    }, 1800);
   }
 
   inspectByIndex(index, moveFocus = false) {
@@ -2928,12 +3776,18 @@ class AndiGen1Controller {
       return;
     }
 
+    if (this.highlightedIdRefEl) {
+      this.highlightedIdRefEl.removeAttribute('data-andi-idref-target');
+      this.highlightedIdRefEl = null;
+    }
+
     if (this.activeIndex > 0 && this.records[this.activeIndex - 1]) {
       this.records[this.activeIndex - 1].element.removeAttribute('data-andi-active');
     }
 
     this.activeIndex = index;
     rec.element.setAttribute('data-andi-active', 'true');
+    (window).$andiActiveNode = rec.element;
     rec.coordinates = getElementCoordinates(rec.element);
 
     if (moveFocus) {
@@ -3029,6 +3883,19 @@ class AndiGen1Controller {
         outline: 3.5px solid #be185d !important;
         outline-offset: 3px !important;
         box-shadow: 0 0 0 4px rgba(190, 24, 93, 0.28) !important;
+      }
+      [data-andi-idref-target="true"] {
+        outline: 3.5px solid #0284c7 !important;
+        outline-offset: 3px !important;
+        box-shadow: 0 0 0 5px rgba(2, 132, 199, 0.35) !important;
+      }
+      @keyframes andiNodePulse {
+        0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.85); }
+        70% { box-shadow: 0 0 0 12px rgba(16, 185, 129, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+      }
+      [data-andi-pulse-target="true"] {
+        animation: andiNodePulse 0.9s ease-out 2 !important;
       }
       [data-andi-note] {
         position: relative;
@@ -3215,7 +4082,7 @@ class AndiGen1Controller {
     brandBadge.textContent = 'ANDI-Gen1';
     const versionSpan = document.createElement('span');
     versionSpan.className = 'andi-version';
-    versionSpan.textContent = 'v31.1 TS';
+    versionSpan.textContent = 'v31.2 TS';
     brand.append(brandBadge, versionSpan);
 
     const moduleWrap = document.createElement('div');
@@ -3350,7 +4217,26 @@ class AndiGen1Controller {
     srTitle.textContent = '🔊 Screen Reader Spoken Output:';
     this.srOutputEl = document.createElement('div');
     this.srOutputEl.className = 'sr-output';
-    srBox.append(srTitle, this.srOutputEl);
+
+    // Requirement #1: Extracted DOM Node under Screen Reader Output (click to navigate to DOM node)
+    this.srDomNodeBarEl = document.createElement('div');
+    this.srDomNodeBarEl.className = 'sr-dom-node-bar';
+
+    // Requirement #3 (Part B): IDREF attributes (aria-labelledby, aria-describedby, headers, label[for]) with clickable target links
+    this.srIdRefsBarEl = document.createElement('div');
+    this.srIdRefsBarEl.className = 'sr-idrefs-bar';
+
+    // Requirement #2: Semantic association bar (e.g. role="table" / role="grid" header associations)
+    this.srSemanticAssocBarEl = document.createElement('div');
+    this.srSemanticAssocBarEl.className = 'sr-semantic-bar';
+
+    srBox.append(
+      srTitle,
+      this.srOutputEl,
+      this.srDomNodeBarEl,
+      this.srIdRefsBarEl,
+      this.srSemanticAssocBarEl
+    );
 
     const compTable = document.createElement('table');
     compTable.className = 'comp-table';
@@ -3380,7 +4266,11 @@ class AndiGen1Controller {
     this.noteDrawerEl = this.buildFlyinNoteDrawer();
     bar.appendChild(this.noteDrawerEl);
 
-    // 4. Modals (#5 CSP Resolver, #3/#4/#6 Visual + Code Defect Report)
+    // 4. On-Demand Fly-in Element Inventory Drawer (Requirement #3: Array of tables, links, buttons, landmarks, headings, etc.)
+    this.inventoryDrawerEl = this.buildFlyinInventoryDrawer();
+    bar.appendChild(this.inventoryDrawerEl);
+
+    // 5. Modals (#5 CSP Resolver, #3/#4/#6 Visual + Code Defect Report)
     this.cspModalEl = this.buildCspModal();
     this.reportModalEl = this.buildReportModal();
     bar.append(this.cspModalEl, this.reportModalEl);
@@ -3734,10 +4624,28 @@ class AndiGen1Controller {
     pillNotesBtn.textContent = `📝 Notes (${totalNotes})`;
     pillNotesBtn.title = 'Click to open the Notes Panel and view all saved notes on this page';
     pillNotesBtn.addEventListener('click', () => {
+      this.inventoryDrawerEl?.classList.remove('open');
       this.openNoteDrawer('list');
     });
 
-    this.summaryBadgeEl.append(pillFrame, pillElements, pillAlerts, pillNotesBtn);
+    // Requirement #3 (Part A): Actionable `Inventory (x)` button that opens the Element Inventory Fly-In Drawer!
+    const pillInventoryBtn = document.createElement('button');
+    pillInventoryBtn.type = 'button';
+    pillInventoryBtn.className = 'pill pill-inventory pill-actionable';
+    pillInventoryBtn.textContent = `🗂 Inventory (${this.inventoryItems.length})`;
+    pillInventoryBtn.title =
+      'Click to open the Element Inventory Fly-In Drawer (Tables, Links, Buttons, Form Controls, Landmarks, Headings, Graphics, Dialogs/Live, Iframes)';
+    pillInventoryBtn.addEventListener('click', () => {
+      this.openInventoryDrawer();
+    });
+
+    this.summaryBadgeEl.append(
+      pillFrame,
+      pillElements,
+      pillAlerts,
+      pillNotesBtn,
+      pillInventoryBtn
+    );
 
     this.pageAlertsListEl.textContent = '';
 
@@ -3814,7 +4722,10 @@ class AndiGen1Controller {
     const noteBadgeBtn = this.createButton(
       rec.note ? '📝 Note ✓' : '📝 Note',
       'Open Note & Screenshot Drawer for this element',
-      () => this.openNoteDrawer('editor')
+      () => {
+        this.inventoryDrawerEl?.classList.remove('open');
+        this.openNoteDrawer('editor');
+      }
     );
     if (rec.note) {
       noteBadgeBtn.classList.add('btn-note');
@@ -3836,10 +4747,102 @@ class AndiGen1Controller {
 
     this.elementHeaderEl.append(navGroup, contextActions);
 
-    // Screen Reader Output
+    // Screen Reader Spoken Output
     this.srOutputEl.textContent =
       rec.screenReaderOutput || '⚠ No Accessible Name / Silent Output';
     this.srOutputEl.className = rec.accName ? 'sr-output' : 'sr-output sr-missing';
+
+    // Requirement #1: Extracted DOM Node directly under Screen Reader Output + Click to Navigate to DOM Node
+    this.srDomNodeBarEl.textContent = '';
+    const domLabel = document.createElement('span');
+    domLabel.className = 'sr-sub-label';
+    domLabel.textContent = '🧬 Extracted DOM Node:';
+
+    const domNodeBtn = document.createElement('button');
+    domNodeBtn.type = 'button';
+    domNodeBtn.className = 'sr-dom-node-link';
+    domNodeBtn.title = `Click to scroll to, focus, highlight, and laser-point DOM node (${rec.selector}) on the page`;
+    const domCode = document.createElement('code');
+    domCode.textContent = rec.domSnippet;
+    const jumpHint = document.createElement('span');
+    jumpHint.className = 'sr-dom-jump-badge';
+    jumpHint.textContent = '🎯 Click to Navigate to DOM Node';
+    domNodeBtn.append(domCode, jumpHint);
+    domNodeBtn.addEventListener('click', () => {
+      this.navigateToDomElement(rec.element);
+    });
+    this.srDomNodeBarEl.append(domLabel, domNodeBtn);
+
+    // Requirement #3 (Part B): IDREF Attributes (aria-labelledby, aria-describedby, headers, label[for]) & Clickable Linked Targets
+    this.srIdRefsBarEl.textContent = '';
+    if (rec.idRefGroups.length > 0) {
+      this.srIdRefsBarEl.style.display = 'flex';
+      for (const group of rec.idRefGroups) {
+        const groupRow = document.createElement('div');
+        groupRow.className = 'sr-idref-group';
+
+        const attrBadge = document.createElement('code');
+        attrBadge.className = 'sr-idref-attr';
+        attrBadge.textContent = `${group.attribute}="${group.rawValue}"`;
+        groupRow.appendChild(attrBadge);
+
+        for (const item of group.items) {
+          if (item.exists && item.targetElement) {
+            const targetEl = item.targetElement;
+            const linkBtn = document.createElement('a');
+            linkBtn.href = `#${item.id}`;
+            linkBtn.className = 'sr-idref-target-link';
+            const previewTxt =
+              item.text.length > 42 ? `${item.text.slice(0, 39)}...` : item.text || '(empty)';
+            linkBtn.textContent = `🔗 #${item.id} → <${item.targetTag}> "${previewTxt}"`;
+            linkBtn.title = `Click to navigate to referenced DOM node ${item.targetSelector} (<${item.targetTag} id="${item.id}">)`;
+            linkBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              this.navigateToDomElement(targetEl);
+            });
+            groupRow.appendChild(linkBtn);
+          } else {
+            const missingBadge = document.createElement('span');
+            missingBadge.className = 'sr-idref-missing';
+            missingBadge.textContent = `⚠️ #${item.id} (Missing ID Target)`;
+            groupRow.appendChild(missingBadge);
+          }
+        }
+        this.srIdRefsBarEl.appendChild(groupRow);
+      }
+    } else {
+      this.srIdRefsBarEl.style.display = 'none';
+    }
+
+    // Requirement #2: Semantic Table / Role Association Bar inside Screen Reader Output
+    this.srSemanticAssocBarEl.textContent = '';
+    if (rec.tableAssociation) {
+      this.srSemanticAssocBarEl.style.display = 'flex';
+      const ta = rec.tableAssociation;
+      const assocText = document.createElement('span');
+      assocText.className = 'sr-semantic-badge';
+      const parts = [
+        `📊 Semantic [${ta.tableRole}] Association:`
+      ];
+      if (ta.tableName) {
+        parts.push(`Table "${ta.tableName}"`);
+      }
+      if (ta.rowIndex !== null && ta.colIndex !== null) {
+        parts.push(`Cell (Row ${ta.rowIndex}/${ta.rowCount}, Col ${ta.colIndex}/${ta.colCount})`);
+      } else {
+        parts.push(`Grid Size (${ta.rowCount} rows × ${ta.colCount} cols)`);
+      }
+      if (ta.columnHeaders.length > 0) {
+        parts.push(`Col Header(s): "${ta.columnHeaders.join(' | ')}"`);
+      }
+      if (ta.rowHeaders.length > 0) {
+        parts.push(`Row Header(s): "${ta.rowHeaders.join(' | ')}"`);
+      }
+      assocText.textContent = parts.join(' • ');
+      this.srSemanticAssocBarEl.appendChild(assocText);
+    } else {
+      this.srSemanticAssocBarEl.style.display = 'none';
+    }
 
     // Components table
     this.componentsTbodyEl.textContent = '';
@@ -3891,8 +4894,237 @@ class AndiGen1Controller {
   renderEmptyActiveElement() {
     this.elementHeaderEl.textContent = 'No inspectable elements found for this mode.';
     this.srOutputEl.textContent = '—';
+    this.srDomNodeBarEl.textContent = '';
+    this.srIdRefsBarEl.textContent = '';
+    this.srIdRefsBarEl.style.display = 'none';
+    this.srSemanticAssocBarEl.textContent = '';
+    this.srSemanticAssocBarEl.style.display = 'none';
     this.componentsTbodyEl.textContent = '';
     this.elementAlertsListEl.textContent = '';
+  }
+
+  /**
+   * Requirement #3 (Part A): Builds the Fly-In Element Inventory Drawer (similar to Note Drawer),
+   * listing all page interface elements in an interactive array categorized by:
+   * Tables, Links, Buttons, Form Controls, Landmarks, Headings, Graphics, Dialogs/Live, and Iframes.
+   */
+  buildFlyinInventoryDrawer() {
+    const drawer = document.createElement('aside');
+    drawer.className = 'flyin-note-drawer flyin-inventory-drawer';
+    drawer.setAttribute('role', 'dialog');
+    drawer.setAttribute('aria-label', 'Page Element Inventory Fly-In Drawer');
+
+    const topRow = document.createElement('div');
+    topRow.className = 'flyin-header';
+    const title = document.createElement('h3');
+    title.textContent = '🗂 Page Element Inventory Array';
+
+    const topActions = document.createElement('div');
+    topActions.className = 'saved-note-actions';
+
+    const copyInvBtn = this.createButton(
+      '📋 Copy Inventory JSON',
+      'Copy the current filtered Element Inventory Array as JSON to clipboard',
+      () => {
+        const exportArray = this.getFilteredInventoryItems().map((it) => ({
+          id: it.id,
+          category: it.category,
+          inspectedIndex: it.inspectedIndex,
+          tagName: it.tagName,
+          role: it.role,
+          semanticRole: it.semanticRole,
+          domSnippet: it.domSnippet,
+          selector: it.selector,
+          accName: it.accName,
+          accDesc: it.accDesc,
+          details: it.details,
+          alertCount: it.alertCount,
+          coordinates: it.coordinates.formatted
+        }));
+        navigator.clipboard?.writeText(JSON.stringify(exportArray, null, 2));
+        copyInvBtn.textContent = '✓ Copied Array!';
+        setTimeout(() => {
+          copyInvBtn.textContent = '📋 Copy Inventory JSON';
+        }, 1500);
+      }
+    );
+    copyInvBtn.classList.add('btn-primary');
+
+    const closeBtn = this.createButton('✕ Close', 'Close Element Inventory Panel', () => {
+      drawer.classList.remove('open');
+    });
+
+    topActions.append(copyInvBtn, closeBtn);
+    topRow.append(title, topActions);
+
+    // Category filter bar
+    this.inventoryCategoryBarEl = document.createElement('div');
+    this.inventoryCategoryBarEl.className = 'inv-category-bar';
+
+    // Search input
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'inv-search-wrap';
+    this.inventorySearchInput = document.createElement('input');
+    this.inventorySearchInput.type = 'search';
+    this.inventorySearchInput.className = 'inv-search-input';
+    this.inventorySearchInput.placeholder =
+      'Filter inventory array by accessible name, tag, role, DOM snippet, or selector...';
+    this.inventorySearchInput.setAttribute('aria-label', 'Filter Element Inventory');
+    this.inventorySearchInput.addEventListener('input', () => {
+      this.inventorySearchQuery = this.inventorySearchInput.value.trim().toLowerCase();
+      this.renderInventoryDrawer();
+    });
+    searchWrap.appendChild(this.inventorySearchInput);
+
+    this.inventoryCountHeadingEl = document.createElement('h4');
+    this.inventoryCountHeadingEl.className = 'all-notes-heading';
+
+    this.inventoryListEl = document.createElement('ul');
+    this.inventoryListEl.className = 'all-notes-list inv-array-list';
+
+    drawer.append(
+      topRow,
+      this.inventoryCategoryBarEl,
+      searchWrap,
+      this.inventoryCountHeadingEl,
+      this.inventoryListEl
+    );
+    return drawer;
+  }
+
+  openInventoryDrawer(category) {
+    this.noteDrawerEl?.classList.remove('open');
+    if (category) {
+      this.activeInventoryCategory = category;
+    }
+    this.renderInventoryDrawer();
+    this.inventoryDrawerEl.classList.add('open');
+    this.inventorySearchInput.focus();
+  }
+
+  getFilteredInventoryItems() {
+    return this.inventoryItems.filter((item) => {
+      if (
+        this.activeInventoryCategory !== 'all' &&
+        item.category !== this.activeInventoryCategory
+      ) {
+        return false;
+      }
+      if (!this.inventorySearchQuery) {
+        return true;
+      }
+      const haystack = `${item.accName} ${item.accDesc} ${item.tagName} ${item.role} ${item.semanticRole} ${item.domSnippet} ${item.selector} ${item.details}`.toLowerCase();
+      return haystack.includes(this.inventorySearchQuery);
+    });
+  }
+
+  renderInventoryDrawer() {
+    if (!this.inventoryCategoryBarEl || !this.inventoryListEl || !this.inventoryCountHeadingEl) {
+      return;
+    }
+
+    const categoryMeta = [
+      { key: 'all', label: 'All', icon: '🗂' },
+      { key: 'tables', label: 'Tables', icon: '📊' },
+      { key: 'links', label: 'Links', icon: '🔗' },
+      { key: 'buttons', label: 'Buttons', icon: '🔘' },
+      { key: 'formControls', label: 'Form Controls', icon: '⌨️' },
+      { key: 'landmarks', label: 'Landmarks', icon: '🧭' },
+      { key: 'headings', label: 'Headings', icon: '📑' },
+      { key: 'graphics', label: 'Graphics', icon: '🖼' },
+      { key: 'dialogsLive', label: 'Dialogs/Live', icon: '💬' },
+      { key: 'iframes', label: 'Iframes', icon: '🪟' }
+    ];
+
+    this.inventoryCategoryBarEl.textContent = '';
+    for (const cat of categoryMeta) {
+      const count =
+        cat.key === 'all'
+          ? this.inventoryItems.length
+          : this.inventoryItems.filter((i) => i.category === cat.key).length;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `inv-cat-btn ${this.activeInventoryCategory === cat.key ? 'active' : ''}`;
+      btn.textContent = `${cat.icon} ${cat.label} (${count})`;
+      btn.addEventListener('click', () => {
+        this.activeInventoryCategory = cat.key;
+        this.renderInventoryDrawer();
+      });
+      this.inventoryCategoryBarEl.appendChild(btn);
+    }
+
+    const filtered = this.getFilteredInventoryItems();
+    this.inventoryCountHeadingEl.textContent = `Array Elements (${filtered.length} shown of ${this.inventoryItems.length} total)`;
+
+    this.inventoryListEl.textContent = '';
+    if (filtered.length === 0) {
+      const emptyLi = document.createElement('li');
+      emptyLi.className = 'empty-msg';
+      emptyLi.textContent = 'No elements match the selected inventory category or filter.';
+      this.inventoryListEl.appendChild(emptyLi);
+      return;
+    }
+
+    filtered.forEach((item, arrayIdx) => {
+      const li = document.createElement('li');
+      li.className = 'saved-note-card inv-item-card';
+
+      const headerRow = document.createElement('div');
+      headerRow.className = 'saved-note-header';
+
+      const leftBadges = document.createElement('div');
+      leftBadges.className = 'inv-badges';
+
+      const arrIdxBadge = document.createElement('span');
+      arrIdxBadge.className = 'pill pill-info';
+      arrIdxBadge.textContent = `[${arrayIdx}] ${item.category.toUpperCase()}`;
+
+      const roleBadge = document.createElement('code');
+      roleBadge.className = 'el-tag';
+      roleBadge.textContent = `<${item.tagName}${item.role ? ` role="${item.role}"` : ''}> (${item.semanticRole})`;
+
+      leftBadges.append(arrIdxBadge, roleBadge);
+
+      if (item.alertCount > 0) {
+        const alertBadge = document.createElement('span');
+        alertBadge.className = 'pill pill-danger';
+        alertBadge.textContent = `⚠ ${item.alertCount} Alert${item.alertCount === 1 ? '' : 's'}`;
+        leftBadges.appendChild(alertBadge);
+      }
+
+      const jumpBtn = this.createButton(
+        item.inspectedIndex ? `🎯 Navigate (#${item.inspectedIndex})` : '🎯 Navigate to Node',
+        `Scroll to, focus, and highlight ${item.selector}`,
+        () => {
+          this.navigateToDomElement(item.element);
+        }
+      );
+      jumpBtn.classList.add('btn-primary');
+
+      headerRow.append(leftBadges, jumpBtn);
+
+      const nameRow = document.createElement('div');
+      nameRow.className = 'saved-note-text';
+      nameRow.textContent = `🔊 Accessible Name: "${item.accName || '(No Accessible Name)'}"${item.accDesc ? ` | Desc: "${item.accDesc}"` : ''}`;
+
+      const detailsRow = document.createElement('div');
+      detailsRow.className = 'saved-note-meta';
+      detailsRow.textContent = `${item.details} · 📍 ${item.coordinates.formatted}`;
+
+      const domRowBtn = document.createElement('button');
+      domRowBtn.type = 'button';
+      domRowBtn.className = 'sr-dom-node-link inv-dom-btn';
+      domRowBtn.title = `Click to navigate to DOM node ${item.selector}`;
+      const domCode = document.createElement('code');
+      domCode.textContent = item.domSnippet;
+      domRowBtn.appendChild(domCode);
+      domRowBtn.addEventListener('click', () => {
+        this.navigateToDomElement(item.element);
+      });
+
+      li.append(headerRow, nameRow, detailsRow, domRowBtn);
+      this.inventoryListEl.appendChild(li);
+    });
   }
 
   buildCspModal() {
@@ -4421,6 +5653,7 @@ class AndiGen1Controller {
       .pill-danger { background: #7f1d1d; color: #ffffff; border-color: #fca5a5; }
       .pill-ok { background: #065f46; color: #ffffff; border-color: #6ee7b7; }
       .pill-note { background: #4c1d95; color: #ffffff; border-color: #d8b4fe; }
+      .pill-inventory { background: #0c4a6e; color: #ffffff; border-color: #7dd3fc; }
       .pill-actionable {
         cursor: pointer;
         text-decoration: underline;
@@ -4540,6 +5773,181 @@ class AndiGen1Controller {
         color: var(--text-main);
       }
       .sr-missing { color: var(--sr-missing-color); }
+
+      /* Requirement #1: Extracted DOM Node Bar under Screen Reader Output */
+      .sr-dom-node-bar {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 5px;
+        padding-top: 5px;
+        border-top: 1px dashed var(--border-color);
+      }
+      .sr-sub-label {
+        font-size: 11px;
+        font-weight: 800;
+        color: var(--text-muted);
+      }
+      .sr-dom-node-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        background: var(--bg-panel);
+        color: var(--accent);
+        border: 1.5px solid var(--border-color);
+        border-radius: 5px;
+        padding: 3px 8px;
+        font-size: 11.5px;
+        font-weight: 700;
+        cursor: pointer;
+        text-align: left;
+      }
+      .sr-dom-node-link:hover, .sr-dom-node-link:focus-visible {
+        outline: 2.5px solid var(--accent);
+        border-color: var(--accent);
+      }
+      .sr-dom-node-link code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--text-main);
+        font-weight: 700;
+      }
+      .sr-dom-jump-badge {
+        background: #065f46;
+        color: #ffffff;
+        border: 1px solid #6ee7b7;
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 10.5px;
+        font-weight: 800;
+      }
+
+      /* Requirement #3 (Part B): IDREF Attributes & Linked Items in Screen Reader Output */
+      .sr-idrefs-bar {
+        display: none;
+        flex-direction: column;
+        gap: 4px;
+        margin-top: 5px;
+        padding-top: 5px;
+        border-top: 1px dashed var(--border-color);
+      }
+      .sr-idref-group {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .sr-idref-attr {
+        background: #312e81;
+        color: #ffffff;
+        border: 1px solid #a5b4fc;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .sr-idref-target-link {
+        display: inline-flex;
+        align-items: center;
+        background: #0c4a6e;
+        color: #ffffff;
+        border: 1px solid #7dd3fc;
+        border-radius: 4px;
+        padding: 2px 7px;
+        font-size: 11px;
+        font-weight: 700;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      .sr-idref-target-link:hover, .sr-idref-target-link:focus-visible {
+        outline: 2.5px solid #ffffff;
+        background: #0369a1;
+      }
+      .sr-idref-missing {
+        display: inline-flex;
+        align-items: center;
+        background: #7f1d1d;
+        color: #ffffff;
+        border: 1px solid #fca5a5;
+        border-radius: 4px;
+        padding: 2px 7px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      /* Requirement #2: Semantic Table / Role Association Bar */
+      .sr-semantic-bar {
+        display: none;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 5px;
+        padding-top: 5px;
+        border-top: 1px dashed var(--border-color);
+      }
+      .sr-semantic-badge {
+        background: #064e3b;
+        color: #ffffff;
+        border: 1px solid #6ee7b7;
+        border-radius: 4px;
+        padding: 2px 7px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      /* Requirement #3 (Part A): Element Inventory Fly-In Drawer */
+      .flyin-inventory-drawer {
+        width: 560px;
+        right: -580px;
+      }
+      .flyin-inventory-drawer.open {
+        right: 0;
+      }
+      .inv-category-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-bottom: 8px;
+      }
+      .inv-cat-btn {
+        background: var(--bg-sub);
+        color: var(--text-main);
+        border: 1.5px solid var(--border-color);
+        border-radius: 999px;
+        padding: 3px 9px;
+        font-size: 11px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .inv-cat-btn.active {
+        background: #1d4ed8;
+        color: #ffffff;
+        border-color: #93c5fd;
+      }
+      .inv-search-wrap {
+        margin-bottom: 8px;
+      }
+      .inv-search-input {
+        width: 100%;
+        background: var(--bg-sub);
+        color: var(--text-main);
+        border: 1.5px solid var(--border-color);
+        border-radius: 6px;
+        padding: 6px 9px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .inv-badges {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .inv-dom-btn {
+        width: 100%;
+        margin-top: 4px;
+      }
 
       .comp-table {
         width: 100%;

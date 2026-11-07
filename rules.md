@@ -46,6 +46,22 @@ This document catalogs the architectural enhancements, feature updates, usabilit
 ### Feature #9: DOM Node Screenshot with Tester Note, Coordinates & Browser Metadata
 - In the Fly-In Notes drawer, clicking **📸 Save Note + Screenshot** renders a high-DPI HTML5 Canvas PNG card burning in the element's visual box, `<tag>`, selector, **exact DOM coordinates (`x, y, pageX, pageY, width × height`)**, **Browser/OS**, **timestamp**, ANDI alert status, and the tester's note.
 
+### Feature #10: Extracted DOM Node in Screen Reader Output & Click-to-Navigate
+- Directly below the spoken preview inside the **Screen Reader Spoken Output** box (`srBox`), ANDI-Gen1 displays the **Extracted DOM Node** (`🧬 Extracted DOM Node: <code>...</code>`) for the currently inspected element (extracted via [`extractDomNodeSnippet()`](./src/dom-index.ts)).
+- Clicking the DOM node button (`🎯 Click to Navigate to DOM Node`) invokes [`navigateToDomElement()`](./src/ui-shadow.ts), which smoothly scrolls the DOM node into view, focuses it, plays a visual target pulse animation, draws the SVG laser line to it, and exposes `window.$andiActiveNode` for instant DevTools inspection.
+
+### Feature #11: Semantic Detection & Associations for Alternative ARIA Attributes / Roles
+- [`computeTableSemanticAssociation()`](./src/acc-name.ts), [`evaluateTableElement()`](./andi/tandi.ts), and [`getMatchedModulesForElement()`](./src/analyzers.ts) detect semantic equivalents when alternative ARIA attributes/roles are used instead of native HTML tags:
+  - **Semantic Tables & Grids**: When `role="table"`, `role="grid"`, or `role="treegrid"` is used instead of `<table>`, ANDI-Gen1 resolves semantic rows (`[role="row"]`), column headers (`[role="columnheader"]` or `<th>`), row headers (`[role="rowheader"]` or `<th scope="row">`), data cells (`[role="cell"]`, `[role="gridcell"]`, `<td>`), explicit `headers="..."` IDREFs, and `aria-colindex`/`aria-rowindex` to build header-to-cell associations (`[Col: ... | Row: ...]`) directly in the Screen Reader Spoken Output and Components table.
+  - **Semantic Lists, Headings, Landmarks & Widgets**: Detects `role="list"` / `role="listitem"` (including `X of Y` list position and orphan item checks), `role="heading"` + `aria-level`, `role="button"`, `role="link"`, `role="textbox"`, `role="combobox"`, `role="checkbox"`, `role="radio"`, `role="switch"`, `role="slider"`, `role="spinbutton"`, `role="dialog"`, `role="alertdialog"`, and landmark roles (`banner`, `navigation`, `main`, `contentinfo`, `complementary`, `region`, `search`, `form`).
+
+### Feature #12: Element Inventory Fly-In Drawer (`🗂 Inventory (N)`) & Interactive `idref` Linking in Screen Reader Output
+- **Element Inventory Fly-In Drawer (`🗂 Inventory (N)`)**:
+  - Added an actionable **`🗂 Inventory (N)`** button in Zone 2 of the top command bar (next to `📝 Notes (x)`) that opens a slide-in drawer displaying the array of interface elements built by [`buildPageInventory()`](./src/analyzers.ts).
+  - Categorizes and filters elements across **All**, **Tables**, **Links**, **Buttons**, **Form Controls**, **Landmarks**, **Headings**, **Graphics**, **Dialogs/Live**, and **Iframes**, with instant text search, **📋 Copy Inventory JSON**, and one-click **🎯 Navigate to Node** buttons.
+- **Interactive `idref` Attributes & Linked Items in Screen Reader Output**:
+  - When `aria-labelledby`, `aria-describedby`, `headers`, `label[for]`, `aria-errormessage`, `aria-controls`, or `aria-details` are present on the inspected element, the Screen Reader Spoken Output box displays each `idref` attribute (`aria-labelledby="id1 id2"`) and renders clickable link pills (`🔗 #id1 → <tag> "Referenced Text"`) for every referenced element (or `⚠️ #missingId (Missing ID Target)` if broken). Clicking any referenced item navigates directly to and highlights that referenced DOM node on the page.
+
 ---
 
 ## 2. Usability Analysis & 3-Zone Ergonomic Workflow Redesign
