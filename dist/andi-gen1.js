@@ -1,4 +1,4 @@
-/*! ANDI-Gen1 v31.2.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */
+/*! ANDI-Gen1 v31.3.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */
 (function() {
   'use strict';
 
@@ -2028,6 +2028,1225 @@ function getSafeOuterHtmlSnippet(el) {
   return outer;
 }
 
+  // === Module: src/harness-runtime.ts ===
+/**
+ * ANDI-Gen1 — Test Harness Browser Runtime
+ *
+ * `harnessRuntime()` is NOT executed inside the inspected page. Its source is serialized
+ * (`Function.prototype.toString`) into every generated test-harness `.html` file by
+ * `buildTestHarnessHtml()` and runs there, standalone, with no dependency on the rest of ANDI-Gen1.
+ *
+ * It attaches the event handlers, widget state logic, dialogs and logging a tester needs to
+ * exercise a copied DOM fragment locally. It is deliberately typed loosely (`any`) because it only
+ * ever manipulates arbitrary third-party DOM.
+ */
+
+function harnessRuntime() {
+  const metaNode = document.getElementById('hx-meta');
+  let meta = {};
+  try {
+    meta = JSON.parse((metaNode && metaNode.textContent) || '{}');
+  } catch (err) {
+    meta = {};
+  }
+
+  const state = { dialog: null, trap: false, opener: null, simulateKeys: true };
+
+  // ---------------------------------------------------------------------------
+  // Harness chrome lives in a Shadow DOM so page CSS never leaks in and so that
+  // ANDI-Gen1 (or any DOM walker) run on this file inspects only the copied fragment.
+  // ---------------------------------------------------------------------------
+  const host = document.createElement('div');
+  host.id = 'andi-harness-chrome';
+  host.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483000;';
+  document.body.appendChild(host);
+  const shadow = host.attachShadow({ mode: 'open' });
+  shadow.innerHTML = [
+    '<style>',
+    ':host{all:initial}',
+    '*{box-sizing:border-box}',
+    '.panel{font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#020617;color:#fff;border-top:3px solid #7dd3fc;max-height:44vh;display:flex;flex-direction:column}',
+    '.row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #475569}',
+    '.grow{flex:1}',
+    'button{font:inherit;font-weight:700;background:#1e293b;color:#fff;border:1.5px solid #94a3b8;border-radius:6px;padding:3px 9px;cursor:pointer}',
+    'button.primary{background:#1d4ed8;border-color:#93c5fd}',
+    'button:focus-visible,input:focus-visible,summary:focus-visible{outline:2.5px solid #7dd3fc;outline-offset:1px}',
+    'input[type=text]{font:inherit;background:#0f172a;color:#fff;border:1.5px solid #94a3b8;border-radius:6px;padding:3px 6px}',
+    'code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#7dd3fc}',
+    '.body{display:flex;flex-direction:column;min-height:0;overflow:hidden}',
+    '.findings{padding:4px 10px;border-bottom:1px solid #475569;max-height:140px;overflow:auto}',
+    '.findings div{margin:2px 0}',
+    '.log{list-style:none;margin:0;padding:6px 10px;overflow:auto;flex:1;min-height:70px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}',
+    '.log li{border-bottom:1px solid #1e293b;white-space:pre-wrap;word-break:break-word}',
+    '.k-click{color:#7dd3fc}.k-key{color:#fde68a}.k-dialog{color:#f0abfc}.k-error{color:#fca5a5}.k-info{color:#86efac}.k-form{color:#fdba74}',
+    '.overlay{position:fixed;pointer-events:none;border:3px dashed #f472b6;border-radius:4px;box-shadow:0 0 0 2px rgba(2,6,23,.6)}',
+    '</style>',
+    '<div class="overlay" id="overlay" hidden></div>',
+    '<section class="panel" aria-label="ANDI-Gen1 test harness controls">',
+    '<div class="row">',
+    '<strong>🧪 ANDI-Gen1 Test Harness</strong><code id="sel"></code><span class="grow"></span>',
+    '<label>ANDI script <input type="text" id="src" size="40"></label>',
+    '<button class="primary" id="launch" type="button">▶ Launch ANDI-Gen1 on this harness</button>',
+    '<button id="collapse" type="button" aria-expanded="true">▾ Collapse</button>',
+    '</div>',
+    '<div class="body" id="body">',
+    '<details class="findings" open><summary>Findings captured from the source page</summary><div id="findings"></div></details>',
+    '<div class="row">',
+    '<label><input type="checkbox" id="keys" checked> Simulate keyboard activation (Enter / Space / arrows / Esc) on ARIA widgets</label>',
+    '<label><input type="checkbox" id="hl" checked> Highlight inspected element</label>',
+    '<span id="dialogs"></span><span id="lives"></span>',
+    '<span class="grow"></span><button id="clear" type="button">Clear log</button>',
+    '</div>',
+    '<ul class="log" id="log" aria-label="Harness event log"></ul>',
+    '</div>',
+    '</section>'
+  ].join('');
+
+  const $ = (id) => shadow.getElementById(id);
+  const logEl = $('log');
+  const overlay = $('overlay');
+
+  function log(kind, msg) {
+    const li = document.createElement('li');
+    li.className = 'k-' + kind;
+    li.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+    logEl.appendChild(li);
+    while (logEl.children.length > 300) {
+      const first = logEl.firstElementChild;
+      if (!first) break;
+      logEl.removeChild(first);
+    }
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function describe(el) {
+    if (!el || !el.tagName) return String(el);
+    let s = el.tagName.toLowerCase();
+    if (el.id) s += '#' + el.id;
+    const role = el.getAttribute('role');
+    if (role) s += '[role=' + role + ']';
+    const name = (el.getAttribute('aria-label') || el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (name) s += ' "' + (name.length > 32 ? name.slice(0, 29) + '...' : name) + '"';
+    return s;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Header, findings and controls
+  // ---------------------------------------------------------------------------
+  $('sel').textContent = meta.selector || '';
+  const srcInput = $('src');
+  srcInput.value = meta.andiScriptUrl || '';
+  srcInput.placeholder = './dist/andi-gen1.js for a local build';
+
+  const findings = $('findings');
+  function addFinding(label, value) {
+    if (!value) return;
+    const row = document.createElement('div');
+    const b = document.createElement('strong');
+    b.textContent = label + ' ';
+    row.appendChild(b);
+    row.appendChild(document.createTextNode(value));
+    findings.appendChild(row);
+  }
+  addFinding('ANDI mode:', meta.mode);
+  addFinding('Source:', (meta.pageTitle || '') + ' — ' + (meta.sourceUrl || '') + ' (' + (meta.frameContext || '') + ')');
+  addFinding('Captured:', (meta.generatedAtLocal || '') + ' · ' + (meta.browser || ''));
+  addFinding('Screen reader output:', meta.screenReaderOutput);
+  addFinding('Accessible name:', meta.accName);
+  addFinding('Accessible description:', meta.accDesc);
+  addFinding('Coordinates on source page:', meta.coordinates);
+  const alertList = meta.alerts || [];
+  if (alertList.length === 0) {
+    addFinding('ANDI alerts:', 'none detected for this element');
+  } else {
+    alertList.forEach(function (a) {
+      addFinding('[' + String(a.level).toUpperCase() + ' ' + a.module + 'ANDI]', a.message);
+    });
+  }
+
+  $('keys').addEventListener('change', function (e) {
+    state.simulateKeys = e.target.checked;
+    log('info', 'Keyboard activation simulation ' + (state.simulateKeys ? 'ON' : 'OFF (native browser behavior only)'));
+  });
+  $('clear').addEventListener('click', function () {
+    logEl.textContent = '';
+  });
+  $('collapse').addEventListener('click', function () {
+    const body = $('body');
+    const collapsed = body.hidden !== true;
+    body.hidden = collapsed;
+    $('collapse').setAttribute('aria-expanded', String(!collapsed));
+    $('collapse').textContent = collapsed ? '▸ Expand' : '▾ Collapse';
+  });
+  $('launch').addEventListener('click', function () {
+    const url = String(srcInput.value || '').trim();
+    if (!url) {
+      log('error', 'Enter the URL of andi-gen1.js first.');
+      return;
+    }
+    (window).ANDI_INITIAL_MODE = meta.modeKey || 'f';
+    const s = document.createElement('script');
+    s.src = url + (url.indexOf('?') === -1 ? '?' : '&') + 'v=' + Date.now();
+    s.onload = function () {
+      log('info', 'ANDI-Gen1 loaded on this harness (mode ' + (meta.modeKey || 'f') + ').');
+    };
+    s.onerror = function () {
+      log('error', 'Could not load ' + url + ' (offline, blocked by CSP, or wrong path).');
+    };
+    document.head.appendChild(s);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Highlight overlay for the inspected element (drawn in the chrome, so the
+  // element's own outline / focus indicator is never altered)
+  // ---------------------------------------------------------------------------
+  function updateOverlay() {
+    const t = document.querySelector('[data-hx-target]');
+    if (!t || !$('hl').checked) {
+      overlay.hidden = true;
+      return;
+    }
+    const r = t.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) {
+      overlay.hidden = true;
+      return;
+    }
+    overlay.hidden = false;
+    overlay.style.left = r.left - 5 + 'px';
+    overlay.style.top = r.top - 5 + 'px';
+    overlay.style.width = r.width + 10 + 'px';
+    overlay.style.height = r.height + 10 + 'px';
+  }
+  window.addEventListener('scroll', updateOverlay, true);
+  window.addEventListener('resize', updateOverlay);
+  setInterval(updateOverlay, 300);
+  document.documentElement.style.paddingBottom = '260px';
+
+  // ---------------------------------------------------------------------------
+  // Event logging
+  // ---------------------------------------------------------------------------
+  function isHarnessOrAndi(target) {
+    return target === host || (target && target.id === 'andi-gen1-host');
+  }
+
+  const LOGGED = ['click', 'dblclick', 'keydown', 'focusin', 'focusout', 'input', 'change', 'submit', 'invalid', 'toggle', 'close', 'cancel'];
+  LOGGED.forEach(function (name) {
+    document.addEventListener(
+      name,
+      function (e) {
+        if (isHarnessOrAndi(e.target)) return;
+        let extra = '';
+        if (name === 'keydown') {
+          extra = ' key=' + e.key + (e.shiftKey ? '+Shift' : '') + (e.ctrlKey ? '+Ctrl' : '') + (e.altKey ? '+Alt' : '');
+        } else if (name === 'input' || name === 'change') {
+          const v = e.target && e.target.value;
+          if (v !== undefined) extra = ' value="' + String(v).slice(0, 40) + '"';
+        }
+        let kind = 'click';
+        if (name === 'keydown') kind = 'key';
+        else if (name === 'submit' || name === 'invalid') kind = 'form';
+        else if (name === 'close' || name === 'cancel' || name === 'toggle') kind = 'dialog';
+        log(kind, name + ' → ' + describe(e.target) + extra);
+      },
+      true
+    );
+  });
+
+  window.addEventListener('error', function (e) {
+    log('error', '⚠ Script error: ' + (e.message || 'unknown') + ' — an inline handler likely needs page code that is not part of this harness.');
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    log('error', '⚠ Unhandled promise rejection: ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+  });
+
+  // Native JS dialogs still appear, but every call is recorded.
+  ['alert', 'confirm', 'prompt'].forEach(function (name) {
+    const original = (window)[name];
+    (window)[name] = function () {
+      log('dialog', name + '(' + Array.prototype.slice.call(arguments).join(', ') + ')');
+      return original.apply(window, arguments);
+    };
+  });
+  window.open = function (url) {
+    log('info', 'window.open(' + String(url) + ') blocked inside the harness');
+    return null;
+  };
+
+  // ---------------------------------------------------------------------------
+  // Stub page functions referenced by inline handlers (onclick="save()", href="javascript:go()")
+  // ---------------------------------------------------------------------------
+  const RESERVED = ['if', 'for', 'while', 'switch', 'return', 'function', 'catch', 'typeof', 'new', 'void', 'delete', 'this', 'event', 'with', 'else', 'do', 'in', 'of'];
+  const stubbed = [];
+  const handlerSources = [];
+  document.querySelectorAll('*').forEach(function (n) {
+    if (n === host) return;
+    for (let i = 0; i < n.attributes.length; i++) {
+      const a = n.attributes[i];
+      if (a.name.indexOf('on') === 0) {
+        handlerSources.push(a.value);
+      } else if (a.name === 'href' && /^javascript:/i.test(a.value)) {
+        handlerSources.push(a.value.replace(/^javascript:/i, ''));
+      }
+    }
+  });
+  handlerSources.forEach(function (src) {
+    const re = /(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(/g;
+    let m = null;
+    while ((m = re.exec(src)) !== null) {
+      const fname = m[1];
+      if (RESERVED.indexOf(fname) !== -1 || typeof (window)[fname] !== 'undefined') continue;
+      (window)[fname] = function () {
+        log('info', 'Stubbed page function ' + fname + '(' + Array.prototype.slice.call(arguments).join(', ') + ') was called by an inline handler');
+      };
+      stubbed.push(fname);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+  function isNativeInteractive(el) {
+    const t = el.tagName;
+    return t === 'BUTTON' || t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA' || t === 'SUMMARY' || (t === 'A' && el.hasAttribute('href'));
+  }
+
+  function isDisabled(el) {
+    return el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+  }
+
+  function idsOf(el, attr) {
+    const raw = el.getAttribute(attr);
+    if (!raw) return [];
+    return raw
+      .trim()
+      .split(/\s+/)
+      .map(function (id) {
+        return document.getElementById(id);
+      })
+      .filter(Boolean);
+  }
+
+  function isDialogEl(n) {
+    return !!n && (n.tagName === 'DIALOG' || n.getAttribute('role') === 'dialog' || n.getAttribute('role') === 'alertdialog');
+  }
+
+  function isDialogOpen(d) {
+    if (d.tagName === 'DIALOG') return d.open === true;
+    if (d.hidden) return false;
+    const cs = getComputedStyle(d);
+    return cs.display !== 'none' && cs.visibility !== 'hidden';
+  }
+
+  function focusables(root) {
+    return Array.prototype.slice
+      .call(root.querySelectorAll('a[href],button,input,select,textarea,summary,[tabindex],[contenteditable="true"]'))
+      .filter(function (n) {
+        return !n.disabled && n.getAttribute('tabindex') !== '-1' && n.getClientRects().length > 0;
+      });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dialogs (<dialog>, role="dialog", role="alertdialog")
+  // ---------------------------------------------------------------------------
+  function openDialog(d, opener) {
+    const active = document.activeElement;
+    state.opener = opener || (active && active !== host && active !== document.body ? active : document.querySelector('[data-hx-target]'));
+    state.trap = d.tagName === 'DIALOG' || d.getAttribute('aria-modal') === 'true';
+    if (d.tagName === 'DIALOG') {
+      try {
+        d.showModal();
+      } catch (err) {
+        d.setAttribute('open', '');
+      }
+    } else {
+      d.hidden = false;
+      d.style.removeProperty('display');
+      if (getComputedStyle(d).display === 'none') d.style.display = 'block';
+      if (!d.hasAttribute('tabindex')) d.setAttribute('tabindex', '-1');
+    }
+    state.dialog = d;
+    const first = focusables(d)[0] || d;
+    first.focus();
+    log('dialog', 'Opened ' + describe(d) + (state.trap ? ' (modal: focus trapped, Esc closes)' : ' (non-modal, Esc closes)'));
+    refreshDialogButtons();
+  }
+
+  function closeDialog(d, why) {
+    if (d.tagName === 'DIALOG') {
+      if (d.open) d.close();
+    } else {
+      d.hidden = true;
+      d.style.display = 'none';
+    }
+    log('dialog', 'Closed ' + describe(d) + ' (' + why + ')');
+    if (state.dialog === d) {
+      state.dialog = null;
+      if (state.opener && state.opener.focus) state.opener.focus();
+    }
+    refreshDialogButtons();
+  }
+
+  function looksLikeDismiss(el) {
+    const btn = el.closest('button,[role="button"],a,input[type="button"],input[type="submit"]');
+    if (!btn) return false;
+    if (btn.hasAttribute('data-dismiss') || btn.hasAttribute('data-close') || btn.hasAttribute('data-bs-dismiss')) return true;
+    const label = (btn.getAttribute('aria-label') || btn.value || btn.textContent || '').replace(/\s+/g, ' ').trim();
+    return /^(close|cancel|dismiss|ok|okay|no|done|got it|×|✕|x)$/i.test(label);
+  }
+
+  const dialogButtons = [];
+  const dialogHost = $('dialogs');
+  Array.prototype.slice.call(document.querySelectorAll('dialog,[role="dialog"],[role="alertdialog"]')).forEach(function (d) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    (b)._hxDialog = d;
+    b.addEventListener('click', function () {
+      if (isDialogOpen(d)) closeDialog(d, 'harness button');
+      else openDialog(d, null);
+    });
+    d.addEventListener('close', function () {
+      if (state.dialog === d) {
+        state.dialog = null;
+        if (state.opener && state.opener.focus) state.opener.focus();
+      }
+      refreshDialogButtons();
+    });
+    dialogHost.appendChild(b);
+    dialogButtons.push(b);
+  });
+  function refreshDialogButtons() {
+    dialogButtons.forEach(function (b) {
+      const d = b._hxDialog;
+      const heading = d.querySelector('h1,h2,h3,h4,[role="heading"]');
+      const nm = d.getAttribute('aria-label') || (heading ? heading.textContent : '') || d.tagName.toLowerCase();
+      b.textContent = (isDialogOpen(d) ? '✕ Close dialog: ' : '🗨 Open dialog: ') + String(nm).replace(/\s+/g, ' ').trim().slice(0, 28);
+    });
+  }
+  refreshDialogButtons();
+
+  // ---------------------------------------------------------------------------
+  // Live regions
+  // ---------------------------------------------------------------------------
+  let liveCounter = 0;
+  const liveHost = $('lives');
+  Array.prototype.slice
+    .call(document.querySelectorAll('[aria-live]:not([aria-live="off"]),[role="alert"],[role="status"],[role="log"],[role="timer"]'))
+    .forEach(function (region) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = '🔔 Announce in ' + describe(region).slice(0, 34);
+      b.addEventListener('click', function () {
+        liveCounter += 1;
+        const line = document.createElement('div');
+        line.textContent = 'Test announcement #' + liveCounter + ' (' + new Date().toLocaleTimeString() + ')';
+        region.appendChild(line);
+        log('info', 'Injected live-region text into ' + describe(region));
+      });
+      liveHost.appendChild(b);
+    });
+
+  // ---------------------------------------------------------------------------
+  // ARIA widget behaviour (only where the element has no inline handler of its own)
+  // ---------------------------------------------------------------------------
+  function setExpanded(trigger, expanded) {
+    trigger.setAttribute('aria-expanded', String(expanded));
+    idsOf(trigger, 'aria-controls').forEach(function (t) {
+      if (isDialogEl(t)) return;
+      if (expanded) {
+        t.hidden = false;
+        t.style.removeProperty('display');
+        if (getComputedStyle(t).display === 'none') t.style.display = 'block';
+      } else {
+        t.hidden = true;
+        t.style.display = 'none';
+      }
+    });
+    log('info', describe(trigger) + ' aria-expanded=' + expanded);
+  }
+
+  function selectTab(tab) {
+    const list = tab.closest('[role="tablist"]') || tab.parentElement;
+    Array.prototype.slice.call(list.querySelectorAll('[role="tab"]')).forEach(function (t) {
+      const sel = t === tab;
+      t.setAttribute('aria-selected', sel ? 'true' : 'false');
+      t.setAttribute('tabindex', sel ? '0' : '-1');
+      idsOf(t, 'aria-controls').forEach(function (p) {
+        p.hidden = !sel;
+      });
+    });
+    log('info', 'Selected tab ' + describe(tab));
+  }
+
+  function selectRadio(radio) {
+    const role = radio.getAttribute('role');
+    const group = radio.closest('[role="radiogroup"],[role="menu"],[role="menubar"]') || radio.parentElement;
+    Array.prototype.slice.call(group.querySelectorAll('[role="' + role + '"]')).forEach(function (r) {
+      r.setAttribute('aria-checked', r === radio ? 'true' : 'false');
+      if (role === 'radio') r.setAttribute('tabindex', r === radio ? '0' : '-1');
+    });
+    log('info', 'Checked ' + describe(radio));
+  }
+
+  function selectOption(opt) {
+    const box = opt.closest('[role="listbox"]') || opt.parentElement;
+    const multi = box.getAttribute('aria-multiselectable') === 'true';
+    if (multi) {
+      opt.setAttribute('aria-selected', opt.getAttribute('aria-selected') === 'true' ? 'false' : 'true');
+    } else {
+      Array.prototype.slice.call(box.querySelectorAll('[role="option"]')).forEach(function (o) {
+        o.setAttribute('aria-selected', o === opt ? 'true' : 'false');
+      });
+    }
+    log('info', 'Option ' + describe(opt) + ' aria-selected=' + opt.getAttribute('aria-selected'));
+  }
+
+  function activateWidget(w) {
+    if (isDisabled(w) || w.hasAttribute('onclick')) return;
+    const role = w.getAttribute('role') || '';
+    const tag = w.tagName;
+    const nativeField = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
+
+    const dialogTarget = idsOf(w, 'aria-controls').filter(isDialogEl)[0];
+    if (dialogTarget || (w.getAttribute('aria-haspopup') === 'dialog' && !nativeField)) {
+      if (dialogTarget && !isDialogOpen(dialogTarget)) {
+        openDialog(dialogTarget, w);
+        if (w.hasAttribute('aria-expanded')) w.setAttribute('aria-expanded', 'true');
+      }
+      return;
+    }
+
+    if (role === 'tab') {
+      selectTab(w);
+    } else if (role === 'radio' || role === 'menuitemradio') {
+      if (!nativeField) selectRadio(w);
+    } else if (role === 'checkbox' || role === 'switch' || role === 'menuitemcheckbox') {
+      if (!nativeField) {
+        w.setAttribute('aria-checked', w.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+        log('info', describe(w) + ' aria-checked=' + w.getAttribute('aria-checked'));
+      }
+    } else if (role === 'option') {
+      selectOption(w);
+    } else if (!nativeField && w.hasAttribute('aria-pressed')) {
+      w.setAttribute('aria-pressed', w.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+      log('info', describe(w) + ' aria-pressed=' + w.getAttribute('aria-pressed'));
+    } else if (!nativeField && w.hasAttribute('aria-expanded')) {
+      setExpanded(w, w.getAttribute('aria-expanded') !== 'true');
+    }
+  }
+
+  const WIDGET_SELECTOR =
+    '[aria-expanded],[aria-pressed],[aria-haspopup],[aria-controls],[role="tab"],[role="checkbox"],[role="switch"],[role="radio"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"]';
+
+  function handleAnchor(a, e) {
+    const href = a.getAttribute('href') || '';
+    if (/^javascript:/i.test(href)) return;
+    e.preventDefault();
+    if (href.charAt(0) === '#') {
+      const id = decodeURIComponent(href.slice(1));
+      const target = id ? document.getElementById(id) || document.getElementsByName(id)[0] : null;
+      if (target) {
+        const had = target.hasAttribute('tabindex');
+        if (!had) target.setAttribute('tabindex', '-1');
+        target.scrollIntoView({ block: 'center' });
+        target.focus({ preventScroll: true });
+        log('click', 'Same-page link to #' + id + ' → focus moved to ' + describe(target));
+      } else {
+        log('click', 'Same-page link ' + href + ' (no matching target in this harness)');
+      }
+      return;
+    }
+    log('click', 'Navigation blocked: ' + a.href + (a.target === '_blank' ? ' (new tab)' : '') + ' — the harness stays on this page');
+  }
+
+  document.addEventListener('click', function (e) {
+    if (isHarnessOrAndi(e.target) || !(e.target instanceof Element)) return;
+    const el = e.target;
+    const anchor = el.closest('a[href]');
+    if (anchor) handleAnchor(anchor, e);
+    const dlg = el.closest('dialog,[role="dialog"],[role="alertdialog"]');
+    if (dlg && isDialogOpen(dlg) && looksLikeDismiss(el)) closeDialog(dlg, 'dismiss control');
+    const w = el.closest(WIDGET_SELECTOR);
+    if (w) activateWidget(w);
+  });
+
+  document.addEventListener(
+    'submit',
+    function (e) {
+      const form = e.target;
+      if (form && form.getAttribute && form.getAttribute('method') === 'dialog') return;
+      e.preventDefault();
+      const parts = [];
+      try {
+        new FormData(form).forEach(function (v, k) {
+          parts.push(k + '=' + String(v).slice(0, 30));
+        });
+      } catch (err) {
+        parts.push('(unreadable)');
+      }
+      log('form', 'Submit intercepted (no network request). Fields: ' + (parts.join(', ') || 'none'));
+    },
+    true
+  );
+
+  // ---------------------------------------------------------------------------
+  // Keyboard simulation for custom (non-native) widgets
+  // ---------------------------------------------------------------------------
+  const ENTER_ROLES = ['button', 'link', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'option', 'treeitem'];
+  const SPACE_ROLES = ['button', 'checkbox', 'switch', 'radio', 'tab', 'option', 'menuitemcheckbox', 'menuitemradio'];
+  const ARROW_ROLES = ['tab', 'radio', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option'];
+  const ARROW_CONTAINERS = '[role="tablist"],[role="radiogroup"],[role="menu"],[role="menubar"],[role="listbox"],[role="toolbar"]';
+
+  function adjustSlider(el, e) {
+    const role = el.getAttribute('role');
+    if (role !== 'slider' && role !== 'spinbutton') return false;
+    const min = Number(el.getAttribute('aria-valuemin') || 0);
+    const max = Number(el.getAttribute('aria-valuemax') || 100);
+    const step = Number(el.getAttribute('aria-valuestep') || 1);
+    let value = Number(el.getAttribute('aria-valuenow') || min);
+    const k = e.key;
+    if (k === 'ArrowRight' || k === 'ArrowUp') value += step;
+    else if (k === 'ArrowLeft' || k === 'ArrowDown') value -= step;
+    else if (k === 'PageUp') value += step * 10;
+    else if (k === 'PageDown') value -= step * 10;
+    else if (k === 'Home') value = min;
+    else if (k === 'End') value = max;
+    else return false;
+    value = Math.max(min, Math.min(max, value));
+    el.setAttribute('aria-valuenow', String(value));
+    e.preventDefault();
+    log('key', describe(el) + ' aria-valuenow=' + value);
+    return true;
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (isHarnessOrAndi(e.target)) return;
+    const active = e.target instanceof Element ? e.target : null;
+
+    // Dialog focus trap and Escape handling
+    if (state.dialog && isDialogOpen(state.dialog)) {
+      if (e.key === 'Tab' && state.trap) {
+        const f = focusables(state.dialog);
+        if (f.length === 0) {
+          e.preventDefault();
+        } else if (!state.dialog.contains(document.activeElement)) {
+          e.preventDefault();
+          f[0].focus();
+        } else if (e.shiftKey && document.activeElement === f[0]) {
+          e.preventDefault();
+          f[f.length - 1].focus();
+        } else if (!e.shiftKey && document.activeElement === f[f.length - 1]) {
+          e.preventDefault();
+          f[0].focus();
+        }
+      } else if (e.key === 'Escape' && state.dialog.tagName !== 'DIALOG') {
+        e.preventDefault();
+        closeDialog(state.dialog, 'Escape key');
+        return;
+      }
+    }
+
+    if (!state.simulateKeys || !active || !active.getAttribute) return;
+
+    // Escape collapses an expanded popup that contains focus (or its trigger)
+    if (e.key === 'Escape') {
+      const triggers = Array.prototype.slice.call(document.querySelectorAll('[aria-expanded="true"][aria-controls]'));
+      for (let i = 0; i < triggers.length; i++) {
+        const t = triggers[i];
+        const owns = idsOf(t, 'aria-controls').some(function (p) {
+          return !isDialogEl(p) && p.contains(active);
+        });
+        if (t === active || owns) {
+          setExpanded(t, false);
+          t.focus();
+          e.preventDefault();
+          return;
+        }
+      }
+    }
+
+    if (adjustSlider(active, e)) return;
+
+    const role = active.getAttribute('role') || '';
+    const custom = !isNativeInteractive(active);
+
+    if (custom && (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) {
+      const allowed = e.key === 'Enter' ? ENTER_ROLES : SPACE_ROLES;
+      if (allowed.indexOf(role) !== -1 || (e.key === 'Enter' && active.hasAttribute('aria-expanded'))) {
+        e.preventDefault();
+        log('key', 'Simulated click from ' + (e.key === 'Enter' ? 'Enter' : 'Space') + ' on ' + describe(active));
+        active.click();
+        return;
+      }
+    }
+
+    if (ARROW_ROLES.indexOf(role) !== -1 && /^(Arrow(Left|Right|Up|Down)|Home|End)$/.test(e.key)) {
+      const container = active.closest(ARROW_CONTAINERS);
+      if (!container) return;
+      const items = Array.prototype.slice
+        .call(container.querySelectorAll('[role="' + role + '"]'))
+        .filter(function (n) {
+          return !isDisabled(n) && n.getClientRects().length > 0;
+        });
+      const idx = items.indexOf(active);
+      if (idx === -1 || items.length < 2) return;
+      let next = idx;
+      if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = items.length - 1;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (idx - 1 + items.length) % items.length;
+      else next = (idx + 1) % items.length;
+      e.preventDefault();
+      items[next].focus();
+      if (role === 'tab' || role === 'radio') items[next].click();
+    }
+  });
+
+  updateOverlay();
+  log('info', 'Harness ready. Interact with the highlighted element — events, simulated widget state changes, blocked navigation and dialogs are logged here.');
+  if (stubbed.length > 0) {
+    log('info', 'Stubbed page functions referenced by inline handlers: ' + stubbed.join(', '));
+  }
+}
+
+  // === Module: src/test-harness.ts ===
+/**
+ * ANDI-Gen1 — "Copy DOM Code" & Local Test Harness Generator
+ *
+ * - `getCleanDomCode()` returns the inspected element's full, pretty-printed HTML with ANDI's own
+ *   instrumentation (`data-andi*` attributes, injected scripts) removed.
+ * - `buildTestHarnessHtml()` produces a standalone `.html` file that recreates the element in its
+ *   original context so it can be tested locally:
+ *     1. the nearest structural context (table, list, fieldset, select, dialog, label...) so semantics survive,
+ *     2. a shell of the element's ancestors (tag + attributes only) so landmarks / forms / CSS selectors still apply,
+ *     3. every element it references by IDREF (aria-labelledby, aria-describedby, headers, label[for], aria-controls...),
+ *     4. the CSS rules that match those elements (flattened from the page's stylesheets),
+ *     5. an event-handler / dialog / live-region runtime (`harnessRuntime`) and a log panel.
+ */
+
+
+const HARNESS_ANDI_VERSION = 'v31.3';
+const HARNESS_CDN_URL = 'https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@main/dist/andi-gen1.js';
+const ANDI_PAGE_STYLE_ID = 'andi-gen1-page-highlights-css';
+const HARNESS_MAX_CONTEXT_CHARS = 30000;
+const HARNESS_MAX_CSS_CHARS = 250000;
+const HARNESS_MAX_SHELL_DEPTH = 12;
+const HARNESS_MAX_MATCH_POOL = 600;
+
+const HARNESS_CONTEXT_SELECTOR =
+  'table, [role="table"], [role="grid"], [role="treegrid"], ul, ol, menu, dl, ' +
+  '[role="list"], [role="listbox"], [role="menu"], [role="menubar"], [role="tablist"], [role="radiogroup"], [role="group"], ' +
+  'fieldset, select, figure, dialog, [role="dialog"], [role="alertdialog"], label';
+
+const HARNESS_REF_ATTRS_BEFORE = ['aria-labelledby', 'aria-describedby', 'aria-errormessage', 'headers'];
+const HARNESS_REF_ATTRS_AFTER = ['aria-controls', 'aria-details', 'aria-owns', 'aria-activedescendant'];
+const PRESERVE_WHITESPACE_TAGS = ['pre', 'textarea', 'script', 'style'];
+const VOID_TAGS = ['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'];
+
+
+
+function removeAndiAttributes(node) {
+  for (let i = node.attributes.length - 1; i >= 0; i--) {
+    const name = node.attributes[i].name;
+    if (name.indexOf('data-andi') === 0) {
+      node.removeAttribute(name);
+    }
+  }
+}
+
+/**
+ * Strips ANDI instrumentation + scripts from a deep clone and freezes live form state
+ * (typed values, checked boxes, selected options) into attributes so it survives serialization.
+ * `orig` and `clone` must be structurally identical on entry.
+ */
+function sanitizeClone(orig, clone, target) {
+  const origNodes = [orig].concat(Array.from(orig.querySelectorAll('*')));
+  const cloneNodes = [clone].concat(Array.from(clone.querySelectorAll('*')));
+  const scripts = [];
+
+  for (let i = 0; i < origNodes.length; i++) {
+    const o = origNodes[i];
+    const c = cloneNodes[i];
+    if (!c) {
+      continue;
+    }
+    removeAndiAttributes(c);
+    const tag = o.tagName.toLowerCase();
+    if (tag === 'script') {
+      scripts.push(c);
+      continue;
+    }
+    if (target && o === target) {
+      c.setAttribute('data-hx-target', 'true');
+    }
+    if (tag === 'input') {
+      const inp = o;
+      const type = (inp.type || 'text').toLowerCase();
+      if (type === 'checkbox' || type === 'radio') {
+        if (inp.checked) {
+          c.setAttribute('checked', '');
+        } else {
+          c.removeAttribute('checked');
+        }
+      } else if (type !== 'password' && type !== 'file' && inp.value !== (c.getAttribute('value') || '')) {
+        c.setAttribute('value', inp.value);
+      }
+    } else if (tag === 'textarea') {
+      c.textContent = (o).value;
+    } else if (tag === 'select') {
+      const opts = (o).options;
+      const copts = c.querySelectorAll('option');
+      for (let j = 0; j < opts.length && j < copts.length; j++) {
+        if (opts[j].selected) {
+          copts[j].setAttribute('selected', '');
+        } else {
+          copts[j].removeAttribute('selected');
+        }
+      }
+    }
+  }
+
+  for (const s of scripts) {
+    if (s.parentNode) {
+      s.parentNode.removeChild(s);
+    }
+  }
+}
+
+function escapeText(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeAttr(text) {
+  return text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function prettyPrint(node, depth, out) {
+  const pad = '  '.repeat(depth);
+  if (node.nodeType === 3) {
+    const t = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+    if (t) {
+      out.push(pad + escapeText(t));
+    }
+    return;
+  }
+  if (node.nodeType === 8) {
+    out.push(pad + '<!--' + (node.nodeValue || '') + '-->');
+    return;
+  }
+  if (node.nodeType !== 1) {
+    return;
+  }
+  const el = node;
+  const tag = el.tagName.toLowerCase();
+  if (!el.firstElementChild || PRESERVE_WHITESPACE_TAGS.indexOf(tag) !== -1 || VOID_TAGS.indexOf(tag) !== -1) {
+    out.push(pad + el.outerHTML);
+    return;
+  }
+  const shell = (el.cloneNode(false)).outerHTML;
+  const open = shell.slice(0, shell.lastIndexOf('</'));
+  out.push(pad + open);
+  for (let i = 0; i < el.childNodes.length; i++) {
+    prettyPrint(el.childNodes[i], depth + 1, out);
+  }
+  out.push(pad + '</' + tag + '>');
+}
+
+/**
+ * Returns the inspected element's full DOM code (outerHTML), pretty-printed, with ANDI
+ * instrumentation removed. This is exactly what "Copy DOM Code" puts on the clipboard.
+ */
+function getCleanDomCode(el) {
+  const clone = el.cloneNode(true);
+  sanitizeClone(el, clone);
+  const lines = [];
+  prettyPrint(clone, 0, lines);
+  return lines.join('\n');
+}
+
+function getHarnessFileName(rec) {
+  const base = rec.tagName.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'element';
+  return `andi-harness-${base}-${rec.index}.html`;
+}
+
+function pickHarnessRoot(el) {
+  let ctx = null;
+  if (el.matches(HARNESS_CONTEXT_SELECTOR)) {
+    ctx = el;
+  } else if (el.parentElement) {
+    ctx = el.parentElement.closest(HARNESS_CONTEXT_SELECTOR);
+  }
+  if (ctx && ctx.outerHTML.length <= HARNESS_MAX_CONTEXT_CHARS) {
+    return ctx;
+  }
+  return el;
+}
+
+function getEffectiveBackground(el) {
+  const win = el.ownerDocument.defaultView || window;
+  let cur = el;
+  while (cur) {
+    const bg = win.getComputedStyle(cur).backgroundColor;
+    if (bg && bg !== 'transparent' && !/rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0(?:\.0+)?\s*\)/.test(bg)) {
+      return bg;
+    }
+    cur = cur.parentElement;
+  }
+  return 'rgb(255, 255, 255)';
+}
+
+/**
+ * Freezes the computed visual facts that most affect ANDI results onto the inspected element
+ * (hidden state always; text color / effective background / font size & weight for cANDI).
+ */
+function applyTargetStyleSnapshot(orig, clone, modeKey) {
+  const win = orig.ownerDocument.defaultView || window;
+  const cs = win.getComputedStyle(orig);
+  const decls = [];
+  if (cs.display === 'none') {
+    decls.push('display:none');
+  }
+  if (cs.visibility === 'hidden' || cs.visibility === 'collapse') {
+    decls.push('visibility:hidden');
+  }
+  if (modeKey === 'c') {
+    decls.push('color:' + cs.color);
+    decls.push('background-color:' + getEffectiveBackground(orig));
+    decls.push('font-size:' + cs.fontSize);
+    decls.push('font-weight:' + cs.fontWeight);
+  }
+  if (decls.length === 0) {
+    return;
+  }
+  const existing = (clone.getAttribute('style') || '').trim();
+  const sep = existing && existing.slice(-1) !== ';' ? ';' : '';
+  clone.setAttribute('style', existing + sep + decls.join(';'));
+}
+
+function collectReferencedElements(doc, scope, root) {
+  const before = [];
+  const after = [];
+  const seen = [];
+
+  const addTarget = (t, bucket) => {
+    if (t === root || root.contains(t) || t.contains(root)) {
+      return;
+    }
+    if (seen.some((p) => p === t || p.contains(t))) {
+      return;
+    }
+    seen.push(t);
+    bucket.push(t);
+  };
+
+  const addIds = (node, attr, bucket) => {
+    const raw = node.getAttribute(attr);
+    if (!raw) {
+      return;
+    }
+    for (const id of raw.trim().split(/\s+/)) {
+      const t = doc.getElementById(id);
+      if (t) {
+        addTarget(t, bucket);
+      }
+    }
+  };
+
+  for (const node of scope) {
+    for (const attr of HARNESS_REF_ATTRS_BEFORE) {
+      addIds(node, attr, before);
+    }
+    for (const attr of HARNESS_REF_ATTRS_AFTER) {
+      addIds(node, attr, after);
+    }
+    if (node.id) {
+      const labels = doc.querySelectorAll('label[for="' + CSS.escape(node.id) + '"]');
+      labels.forEach((l) => addTarget(l, before));
+    }
+  }
+  return { before, after };
+}
+
+function splitSelectorList(sel) {
+  const parts = [];
+  let depth = 0;
+  let cur = '';
+  for (let i = 0; i < sel.length; i++) {
+    const ch = sel.charAt(i);
+    if (ch === '(' || ch === '[') {
+      depth++;
+    } else if (ch === ')' || ch === ']') {
+      depth--;
+    }
+    if (ch === ',' && depth === 0) {
+      parts.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) {
+    parts.push(cur);
+  }
+  return parts;
+}
+
+/**
+ * Removes pseudo-elements and transient interaction states so that rules such as
+ * `a:hover`, `button:focus-visible` or `p::before` are still included for the base element.
+ */
+function normalizeSelectorForHarness(part) {
+  let s = part.replace(
+    /::?(?:before|after|first-line|first-letter|placeholder|selection|marker|backdrop|file-selector-button|-webkit-[\w-]+|-moz-[\w-]+)/gi,
+    ''
+  );
+  s = s.replace(/:(?:hover|focus-visible|focus-within|focus|active|visited|target)(?![\w-])/gi, '');
+  s = s.trim();
+  if (s === '') {
+    return '*';
+  }
+  if (/^[>+~]/.test(s)) {
+    s = '*' + s;
+  }
+  if (/[>+~]$/.test(s)) {
+    s = s + '*';
+  }
+  return s;
+}
+
+function collectMatchedCss(doc, elements) {
+  const win = doc.defaultView || window;
+  const links = [];
+  const chunks = [];
+  let budget = HARNESS_MAX_CSS_CHARS;
+  const pool = elements.slice(0, HARNESS_MAX_MATCH_POOL);
+
+  const matchesAny = (selectorList) => {
+    for (const part of splitSelectorList(selectorList)) {
+      const normalized = normalizeSelectorForHarness(part);
+      for (const e of pool) {
+        try {
+          if (e.matches(normalized)) {
+            return true;
+          }
+        } catch (err) {
+          break;
+        }
+      }
+    }
+    return false;
+  };
+
+  const visitRules = (rules) => {
+    for (let i = 0; i < rules.length; i++) {
+      if (budget <= 0) {
+        return;
+      }
+      const r = rules[i];
+      if (r.type === 1) {
+        const selectorText = r.selectorText || '';
+        if (selectorText.indexOf('data-andi') === -1 && matchesAny(selectorText)) {
+          const text = r.cssText;
+          budget -= text.length;
+          chunks.push(text);
+        }
+      } else if (r.type === 4) {
+        let ok = true;
+        try {
+          ok = win.matchMedia(r.conditionText || r.media.mediaText).matches;
+        } catch (err) {
+          ok = false;
+        }
+        if (ok) {
+          visitRules(r.cssRules);
+        }
+      } else if (r.type === 12) {
+        visitRules(r.cssRules);
+      }
+    }
+  };
+
+  for (const sheet of Array.from(doc.styleSheets)) {
+    const owner = sheet.ownerNode;
+    if (owner && owner.id === ANDI_PAGE_STYLE_ID) {
+      continue;
+    }
+    if (sheet.disabled) {
+      continue;
+    }
+    let rules = null;
+    try {
+      rules = sheet.cssRules;
+    } catch (err) {
+      rules = null;
+    }
+    if (rules === null) {
+      if (sheet.href) {
+        links.push(sheet.href);
+      }
+      continue;
+    }
+    visitRules(rules);
+  }
+
+  return { css: chunks.join('\n'), links };
+}
+
+function copySafeAttrs(src, allowStyle) {
+  const out = [];
+  for (let i = 0; i < src.attributes.length; i++) {
+    const a = src.attributes[i];
+    const name = a.name.toLowerCase();
+    if (name.indexOf('data-andi') === 0 || name.indexOf('on') === 0) {
+      continue;
+    }
+    let value = a.value;
+    if (name === 'style') {
+      if (!allowStyle) {
+        continue;
+      }
+      // Drop the page margins ANDI adds when docked so the harness is not pushed off-screen.
+      value = value
+        .split(';')
+        .filter((d) => !/^\s*margin(-(top|right|bottom|left))?\s*:/i.test(d))
+        .join(';');
+      if (value.trim() === '') {
+        continue;
+      }
+    }
+    out.push(` ${a.name}="${escapeAttr(value)}"`);
+  }
+  return out.join('');
+}
+
+function sanitizeShell(shell) {
+  removeAndiAttributes(shell);
+  for (let i = shell.attributes.length - 1; i >= 0; i--) {
+    const name = shell.attributes[i].name.toLowerCase();
+    if (name.indexOf('on') === 0) {
+      shell.removeAttribute(shell.attributes[i].name);
+    }
+  }
+}
+
+/**
+ * Builds a complete, standalone, locally-runnable test harness `.html` file for the inspected element.
+ */
+function buildTestHarnessHtml(
+  rec,
+  modeKey,
+  modeLabel,
+  frameLabel
+) {
+  const el = rec.element;
+  const doc = el.ownerDocument;
+  const root = pickHarnessRoot(el);
+
+  // 1. Context root (with the inspected element tagged as the harness target)
+  const rootClone = root.cloneNode(true);
+  sanitizeClone(root, rootClone, el);
+  const targetClone = rootClone.hasAttribute('data-hx-target')
+    ? rootClone
+    : (rootClone.querySelector('[data-hx-target]'));
+  if (targetClone) {
+    applyTargetStyleSnapshot(el, targetClone, modeKey);
+  }
+
+  // 2. Ancestor shell (tag + attributes only)
+  const shellChain = [];
+  let anc = root.parentElement;
+  while (anc && anc !== doc.body && anc !== doc.documentElement && shellChain.length < HARNESS_MAX_SHELL_DEPTH) {
+    shellChain.unshift(anc);
+    anc = anc.parentElement;
+  }
+  let stageNode = rootClone;
+  for (let i = shellChain.length - 1; i >= 0; i--) {
+    const sh = shellChain[i].cloneNode(false);
+    sanitizeShell(sh);
+    sh.appendChild(stageNode);
+    stageNode = sh;
+  }
+
+  // 3. IDREF targets (labels, descriptions, headers, controlled popups...)
+  const scopeNodes = [root].concat(Array.from(root.querySelectorAll('*'))).concat(shellChain);
+  const refs = collectReferencedElements(doc, scopeNodes, root);
+  const cloneRef = (r) => {
+    const c = r.cloneNode(true);
+    sanitizeClone(r, c);
+    return c.outerHTML;
+  };
+  const beforeHtml = refs.before.map(cloneRef).join('\n');
+  const afterHtml = refs.after.map(cloneRef).join('\n');
+
+  // 4. Matching CSS
+  const cssPool = [doc.documentElement, doc.body];
+  for (const n of scopeNodes) {
+    cssPool.push(n);
+  }
+  for (const r of refs.before.concat(refs.after)) {
+    cssPool.push(r);
+    r.querySelectorAll('*').forEach((d) => cssPool.push(d));
+  }
+  const cssResult = collectMatchedCss(doc, cssPool);
+
+  // 5. Metadata for the harness panel
+  const env = getBrowserEnvironmentInfo();
+  const meta = {
+    modeKey,
+    mode: modeLabel,
+    selector: rec.selector,
+    sourceUrl: doc.location ? doc.location.href : '',
+    pageTitle: doc.title,
+    frameContext: frameLabel,
+    generatedAtLocal: new Date().toLocaleString(),
+    browser: env.browserName,
+    andiVersion: HARNESS_ANDI_VERSION,
+    andiScriptUrl: HARNESS_CDN_URL,
+    screenReaderOutput: rec.screenReaderOutput,
+    accName: rec.accName,
+    accDesc: rec.accDesc,
+    coordinates: rec.coordinates.formatted,
+    alerts: rec.alerts.map((a) => ({ level: a.level, code: a.code, module: a.module, message: a.message }))
+  };
+  const metaJson = JSON.stringify(meta).replace(/</g, '\\u003c');
+  const runtimeSource = ('(' + harnessRuntime.toString() + ')();').replace(/<\/script/gi, '<\\/script');
+
+  const baseHref = doc.baseURI && /^(https?|file):/i.test(doc.baseURI) ? doc.baseURI : '';
+  const linkTags = cssResult.links
+    .map((href) => `<link rel="stylesheet" href="${escapeAttr(href)}">`)
+    .join('\n');
+  const refsWrap = (html, label) =>
+    html
+      ? `<div data-hx-refs="${label}" style="outline:1px dashed #94a3b8;outline-offset:2px;margin:6px 0;padding:2px">\n${html}\n</div>`
+      : '';
+
+  return [
+    '<!DOCTYPE html>',
+    `<html${copySafeAttrs(doc.documentElement, false)}>`,
+    '<head>',
+    '<meta charset="UTF-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    `<title>ANDI-Gen1 Test Harness — ${escapeText(rec.selector)}</title>`,
+    baseHref ? `<base href="${escapeAttr(baseHref)}">` : '',
+    linkTags,
+    '<style id="hx-page-css">',
+    cssResult.css.replace(/<\/style/gi, '<\\/style'),
+    '</style>',
+    '</head>',
+    `<body${copySafeAttrs(doc.body, true)}>`,
+    `<!-- ANDI-Gen1 ${HARNESS_ANDI_VERSION} test harness generated ${new Date().toISOString()} from ${escapeText(doc.location ? doc.location.href : '')} (${escapeText(modeLabel)}) -->`,
+    '<!-- Inspected element: ' + escapeText(rec.selector).replace(/--/g, '- -') + ' (marked data-hx-target). Ancestors are reproduced as empty shells so landmarks, forms and CSS selectors still apply. -->',
+    refsWrap(beforeHtml, 'before'),
+    stageNode.outerHTML,
+    refsWrap(afterHtml, 'after'),
+    `<script id="hx-meta" type="application/json">${metaJson}</script>`,
+    `<script>${runtimeSource}</script>`,
+    '</body>',
+    '</html>'
+  ]
+    .filter((line) => line !== '')
+    .join('\n');
+}
+
+
   // === Module: andi/fandi.ts ===
 /**
  * fANDI — Focusable Elements Inspector Module (TypeScript)
@@ -2839,13 +4058,14 @@ function analyzePage(
 }
 
 /**
- * Builds a categorized array of interface elements on the page for the
- * Element Inventory Fly-In Drawer (tables, links, buttons, formControls, landmarks,
- * headings, graphics, dialogsLive, iframes).
+ * Builds a categorized array of interface elements for the Element Inventory Fly-In Drawer.
+ * The inventory is scoped to the SELECTED ANDI mode: in a specific mode (f, g, l, t, s, c, h, i)
+ * only elements that module actually inspects are listed; `all` lists every categorized visible element.
  */
 function buildPageInventory(
   pageIndex,
-  records
+  records,
+  mode
 ) {
   const recordByElement = new Map();
   for (const r of records) {
@@ -2855,14 +4075,41 @@ function buildPageInventory(
   const inventory = [];
   let invId = 0;
 
-  for (const el of pageIndex.visibleElements) {
+  const candidatePool =
+    mode === 'h' ? pageIndex.allElements : pageIndex.visibleElements;
+  const visibleSet = new Set(pageIndex.visibleElements);
+
+  for (const el of candidatePool) {
     const tag = el.tagName.toLowerCase();
     const role = getValidRole(el);
     const rec = recordByElement.get(el) || null;
 
-    const categories = classifyInventoryCategories(el, tag, role);
-    if (categories.length === 0) {
-      continue;
+    let categories = classifyInventoryCategories(el, tag, role);
+
+    if (mode === 'all') {
+      if (!visibleSet.has(el) || categories.length === 0) {
+        continue;
+      }
+    } else {
+      const matched = getMatchedModulesForElement(
+        el,
+        tag,
+        role,
+        getFocusability(el).isFocusable,
+        visibleSet.has(el),
+        pageIndex
+      );
+      if (!matched.includes(mode)) {
+        continue;
+      }
+      if (categories.length === 0) {
+        // Table cells are summarized by their parent table; every other uncategorized
+        // element inspected by this module is listed under "Other".
+        if (mode === 't') {
+          continue;
+        }
+        categories = ['other'];
+      }
     }
 
     const computed = rec ? null : computeAccessibleData(el, pageIndex);
@@ -2874,10 +4121,11 @@ function buildPageInventory(
     const coordinates = rec ? rec.coordinates : getElementCoordinates(el);
     const alertCount = rec ? rec.alerts.length : 0;
     const tableAssoc = rec ? rec.tableAssociation : computed.tableAssociation;
+    const contrast = rec ? rec.addOnProps['contrast'] || '' : '';
 
     for (const category of categories) {
       invId += 1;
-      const details = formatInventoryDetails(el, tag, role, category, tableAssoc);
+      const details = formatInventoryDetails(el, tag, role, category, tableAssoc, contrast);
       inventory.push({
         id: `inv-${invId}`,
         category,
@@ -2998,9 +4246,14 @@ function formatInventoryDetails(
   tag,
   role,
   category,
-  tableAssoc
+  tableAssoc,
+  contrast = ''
 ) {
   switch (category) {
+    case 'other': {
+      const base = `<${tag}${role ? ` role="${role}"` : ''}>`;
+      return contrast ? `${base} • contrast ${contrast}` : base;
+    }
     case 'tables': {
       const kind = tag === 'table' ? '<table>' : `[role="${role}"]`;
       if (tableAssoc) {
@@ -3665,7 +4918,7 @@ class AndiGen1Controller {
     this.populateIframeStepperDropdown();
 
     this.records = analyzePage(pageIndex, this.mode, this.activeFrameLabel);
-    this.inventoryItems = buildPageInventory(pageIndex, this.records);
+    this.inventoryItems = buildPageInventory(pageIndex, this.records, this.mode);
 
     for (const rec of this.records) {
       this.elementToRecord.set(rec.element, rec);
@@ -4082,7 +5335,7 @@ class AndiGen1Controller {
     brandBadge.textContent = 'ANDI-Gen1';
     const versionSpan = document.createElement('span');
     versionSpan.className = 'andi-version';
-    versionSpan.textContent = 'v31.2 TS';
+    versionSpan.textContent = 'v31.3 TS';
     brand.append(brandBadge, versionSpan);
 
     const moduleWrap = document.createElement('div');
@@ -4408,16 +5661,6 @@ class AndiGen1Controller {
     }
   }
 
-  toggleNoteDrawer(forceOpen) {
-    const isOpen = this.noteDrawerEl.classList.contains('open');
-    const nextState = forceOpen !== undefined ? forceOpen : !isOpen;
-    if (nextState) {
-      this.openNoteDrawer('editor');
-    } else {
-      this.noteDrawerEl.classList.remove('open');
-    }
-  }
-
   syncNoteDrawerForRecord(rec) {
     if (!this.noteTextarea || !this.activeNoteMetaEl) {
       return;
@@ -4605,6 +5848,8 @@ class AndiGen1Controller {
       this.reportTriggerBtn.textContent = `📋 Defect Report (${totalDefectReportItems})`;
     }
 
+    // The frame pill only has a function when stepped into an iframe (it tells the tester which document is being audited).
+    // On the top document it carried no information, so it is not rendered.
     const pillFrame = document.createElement('span');
     pillFrame.className = 'pill pill-frame';
     pillFrame.textContent = `🌐 ${this.activeFrameLabel}`;
@@ -4633,19 +5878,15 @@ class AndiGen1Controller {
     pillInventoryBtn.type = 'button';
     pillInventoryBtn.className = 'pill pill-inventory pill-actionable';
     pillInventoryBtn.textContent = `🗂 Inventory (${this.inventoryItems.length})`;
-    pillInventoryBtn.title =
-      'Click to open the Element Inventory Fly-In Drawer (Tables, Links, Buttons, Form Controls, Landmarks, Headings, Graphics, Dialogs/Live, Iframes)';
+    pillInventoryBtn.title = `Open the Element Inventory for the selected mode (${MODULE_LABELS[this.mode]}) — ${this.inventoryItems.length} element${this.inventoryItems.length === 1 ? '' : 's'}`;
     pillInventoryBtn.addEventListener('click', () => {
       this.openInventoryDrawer();
     });
 
-    this.summaryBadgeEl.append(
-      pillFrame,
-      pillElements,
-      pillAlerts,
-      pillNotesBtn,
-      pillInventoryBtn
-    );
+    if (this.steppedInIframe) {
+      this.summaryBadgeEl.append(pillFrame);
+    }
+    this.summaryBadgeEl.append(pillElements, pillAlerts, pillNotesBtn, pillInventoryBtn);
 
     this.pageAlertsListEl.textContent = '';
 
@@ -4709,9 +5950,15 @@ class AndiGen1Controller {
     coordsSpan.className = 'el-coords';
     coordsSpan.textContent = `📍 (${rec.coordinates.x}, ${rec.coordinates.y}) ${rec.coordinates.width}×${rec.coordinates.height}px`;
 
+    // Show only the module(s) actually being run. In a single-module mode an element can still *qualify* for other
+    // modules (e.g. a hidden element that also has text qualifies for both hANDI and cANDI) but those are not run, so listing
+    // them was misleading. In ALL mode every module the element qualified for is shown.
     const modulesSpan = document.createElement('span');
     modulesSpan.className = 'el-modules';
-    modulesSpan.textContent = rec.modulesMatched.map((m) => `${m}ANDI`).join(' · ');
+    const shownModules =
+      this.mode === 'all' ? rec.modulesMatched : rec.modulesMatched.filter((m) => m === this.mode);
+    modulesSpan.textContent =
+      shownModules.length > 0 ? shownModules.map((m) => `${m}ANDI`).join(' · ') : '📝 note only';
 
     navGroup.append(prevBtn, indexBadge, nextBtn, tagCode, coordsSpan, modulesSpan);
 
@@ -4752,26 +5999,67 @@ class AndiGen1Controller {
       rec.screenReaderOutput || '⚠ No Accessible Name / Silent Output';
     this.srOutputEl.className = rec.accName ? 'sr-output' : 'sr-output sr-missing';
 
-    // Requirement #1: Extracted DOM Node directly under Screen Reader Output + Click to Navigate to DOM Node
+    // Extracted DOM Node under Screen Reader Output: copy the full DOM code or a ready-to-run local test harness
     this.srDomNodeBarEl.textContent = '';
     const domLabel = document.createElement('span');
     domLabel.className = 'sr-sub-label';
     domLabel.textContent = '🧬 Extracted DOM Node:';
 
-    const domNodeBtn = document.createElement('button');
-    domNodeBtn.type = 'button';
-    domNodeBtn.className = 'sr-dom-node-link';
-    domNodeBtn.title = `Click to scroll to, focus, highlight, and laser-point DOM node (${rec.selector}) on the page`;
     const domCode = document.createElement('code');
+    domCode.className = 'sr-dom-code';
     domCode.textContent = rec.domSnippet;
-    const jumpHint = document.createElement('span');
-    jumpHint.className = 'sr-dom-jump-badge';
-    jumpHint.textContent = '🎯 Click to Navigate to DOM Node';
-    domNodeBtn.append(domCode, jumpHint);
-    domNodeBtn.addEventListener('click', () => {
-      this.navigateToDomElement(rec.element);
-    });
-    this.srDomNodeBarEl.append(domLabel, domNodeBtn);
+    domCode.title = `${rec.selector} — use Copy DOM Code for the complete markup`;
+
+    const domActions = document.createElement('div');
+    domActions.className = 'sr-dom-actions';
+
+    const domStatus = document.createElement('span');
+    domStatus.className = 'sr-dom-status';
+    domStatus.setAttribute('role', 'status');
+    domStatus.setAttribute('aria-live', 'polite');
+
+    const copyDomBtn = this.createButton(
+      '📋 Copy DOM Code',
+      'Copy the inspected element’s full HTML (ANDI markers removed) to the clipboard',
+      () => {
+        this.runDomAction(domStatus, 'DOM code copied', () => {
+          this.copyTextToClipboard(getCleanDomCode(rec.element), domStatus, 'DOM code copied');
+        });
+      }
+    );
+    const copyHarnessBtn = this.createButton(
+      '🧪 Copy Test Harness',
+      'Copy a standalone HTML test file (element + context, IDREF targets, CSS, event handlers and dialogs) to the clipboard',
+      () => {
+        this.runDomAction(domStatus, 'Test harness copied', () => {
+          this.copyTextToClipboard(
+            buildTestHarnessHtml(rec, this.mode, MODULE_LABELS[this.mode], this.activeFrameLabel),
+            domStatus,
+            'Test harness HTML copied — save it as .html and open it locally'
+          );
+        });
+      }
+    );
+    const downloadHarnessBtn = this.createButton(
+      '⬇ Download Test Harness',
+      'Download the standalone HTML test harness file for local testing',
+      () => {
+        this.runDomAction(domStatus, 'Test harness downloaded', () => {
+          const html = buildTestHarnessHtml(rec, this.mode, MODULE_LABELS[this.mode], this.activeFrameLabel);
+          const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = getHarnessFileName(rec);
+          a.click();
+          URL.revokeObjectURL(url);
+          domStatus.textContent = `✓ Downloaded ${getHarnessFileName(rec)}`;
+        });
+      }
+    );
+    copyDomBtn.classList.add('btn-primary');
+    domActions.append(copyDomBtn, copyHarnessBtn, downloadHarnessBtn, domStatus);
+    this.srDomNodeBarEl.append(domLabel, domCode, domActions);
 
     // Requirement #3 (Part B): IDREF Attributes (aria-labelledby, aria-describedby, headers, label[for]) & Clickable Linked Targets
     this.srIdRefsBarEl.textContent = '';
@@ -4891,6 +6179,50 @@ class AndiGen1Controller {
     }
   }
 
+  /**
+   * Runs a DOM-copy / harness action and reports failures (e.g. cross-origin CSS, blocked clipboard) inline.
+   */
+  runDomAction(statusEl, label, action) {
+    try {
+      action();
+    } catch (err) {
+      statusEl.textContent = `⚠ ${label} failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /**
+   * Copies text to the clipboard, falling back to a hidden textarea + `execCommand('copy')`
+   * for pages whose permissions policy blocks the async Clipboard API.
+   */
+  copyTextToClipboard(text, statusEl, okMessage) {
+    const done = () => {
+      statusEl.textContent = `✓ ${okMessage}`;
+    };
+    const fallback = () => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-1000px;opacity:0;';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try {
+        ok = document.execCommand('copy');
+      } catch {
+        ok = false;
+      }
+      ta.remove();
+      statusEl.textContent = ok
+        ? `✓ ${okMessage}`
+        : '⚠ Clipboard blocked by the browser — use Download Test Harness instead';
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+
   renderEmptyActiveElement() {
     this.elementHeaderEl.textContent = 'No inspectable elements found for this mode.';
     this.srOutputEl.textContent = '—';
@@ -4917,7 +6249,8 @@ class AndiGen1Controller {
     const topRow = document.createElement('div');
     topRow.className = 'flyin-header';
     const title = document.createElement('h3');
-    title.textContent = '🗂 Page Element Inventory Array';
+    title.textContent = '🗂 Element Inventory';
+    this.inventoryTitleEl = title;
 
     const topActions = document.createElement('div');
     topActions.className = 'saved-note-actions';
@@ -5033,11 +6366,24 @@ class AndiGen1Controller {
       { key: 'headings', label: 'Headings', icon: '📑' },
       { key: 'graphics', label: 'Graphics', icon: '🖼' },
       { key: 'dialogsLive', label: 'Dialogs/Live', icon: '💬' },
-      { key: 'iframes', label: 'Iframes', icon: '🪟' }
+      { key: 'iframes', label: 'Iframes', icon: '🪟' },
+      { key: 'other', label: 'Other', icon: '▫️' }
     ];
 
+    if (this.inventoryTitleEl) {
+      this.inventoryTitleEl.textContent = `🗂 Element Inventory — ${MODULE_LABELS[this.mode]}`;
+    }
+
+    // Only show categories that contain elements for the selected mode; fall back to "All" if the active one emptied out.
+    const visibleCategories = categoryMeta.filter(
+      (cat) => cat.key === 'all' || this.inventoryItems.some((i) => i.category === cat.key)
+    );
+    if (!visibleCategories.some((cat) => cat.key === this.activeInventoryCategory)) {
+      this.activeInventoryCategory = 'all';
+    }
+
     this.inventoryCategoryBarEl.textContent = '';
-    for (const cat of categoryMeta) {
+    for (const cat of visibleCategories) {
       const count =
         cat.key === 'all'
           ? this.inventoryItems.length
@@ -5054,13 +6400,13 @@ class AndiGen1Controller {
     }
 
     const filtered = this.getFilteredInventoryItems();
-    this.inventoryCountHeadingEl.textContent = `Array Elements (${filtered.length} shown of ${this.inventoryItems.length} total)`;
+    this.inventoryCountHeadingEl.textContent = `${filtered.length} shown of ${this.inventoryItems.length} element${this.inventoryItems.length === 1 ? '' : 's'} for ${MODULE_LABELS[this.mode]}`;
 
     this.inventoryListEl.textContent = '';
     if (filtered.length === 0) {
       const emptyLi = document.createElement('li');
       emptyLi.className = 'empty-msg';
-      emptyLi.textContent = 'No elements match the selected inventory category or filter.';
+      emptyLi.textContent = 'No elements match this mode, category or filter.';
       this.inventoryListEl.appendChild(emptyLi);
       return;
     }
@@ -5111,18 +6457,22 @@ class AndiGen1Controller {
       detailsRow.className = 'saved-note-meta';
       detailsRow.textContent = `${item.details} · 📍 ${item.coordinates.formatted}`;
 
-      const domRowBtn = document.createElement('button');
-      domRowBtn.type = 'button';
-      domRowBtn.className = 'sr-dom-node-link inv-dom-btn';
-      domRowBtn.title = `Click to navigate to DOM node ${item.selector}`;
+      const domRow = document.createElement('div');
+      domRow.className = 'inv-dom-row';
       const domCode = document.createElement('code');
+      domCode.className = 'sr-dom-code';
       domCode.textContent = item.domSnippet;
-      domRowBtn.appendChild(domCode);
-      domRowBtn.addEventListener('click', () => {
-        this.navigateToDomElement(item.element);
+      const copyStatus = document.createElement('span');
+      copyStatus.className = 'sr-dom-status';
+      copyStatus.setAttribute('role', 'status');
+      const copyBtn = this.createButton('📋 Copy DOM', `Copy the full HTML of ${item.selector}`, () => {
+        this.runDomAction(copyStatus, 'Copy', () => {
+          this.copyTextToClipboard(getCleanDomCode(item.element), copyStatus, 'Copied');
+        });
       });
+      domRow.append(domCode, copyBtn, copyStatus);
 
-      li.append(headerRow, nameRow, detailsRow, domRowBtn);
+      li.append(headerRow, nameRow, detailsRow, domRow);
       this.inventoryListEl.appendChild(li);
     });
   }
@@ -5789,38 +7139,36 @@ class AndiGen1Controller {
         font-weight: 800;
         color: var(--text-muted);
       }
-      .sr-dom-node-link {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        flex-wrap: wrap;
+      .sr-dom-code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        font-weight: 700;
+        color: var(--text-main);
         background: var(--bg-panel);
-        color: var(--accent);
         border: 1.5px solid var(--border-color);
         border-radius: 5px;
         padding: 3px 8px;
-        font-size: 11.5px;
-        font-weight: 700;
-        cursor: pointer;
-        text-align: left;
+        max-width: 100%;
+        overflow-wrap: anywhere;
       }
-      .sr-dom-node-link:hover, .sr-dom-node-link:focus-visible {
-        outline: 2.5px solid var(--accent);
-        border-color: var(--accent);
+      .sr-dom-actions {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        width: 100%;
       }
-      .sr-dom-node-link code {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        color: var(--text-main);
-        font-weight: 700;
-      }
-      .sr-dom-jump-badge {
-        background: #065f46;
-        color: #ffffff;
-        border: 1px solid #6ee7b7;
-        border-radius: 4px;
-        padding: 1px 6px;
-        font-size: 10.5px;
+      .sr-dom-status {
+        font-size: 11px;
         font-weight: 800;
+        color: var(--accent);
+      }
+      .inv-dom-row {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 4px;
       }
 
       /* Requirement #3 (Part B): IDREF Attributes & Linked Items in Screen Reader Output */
@@ -5943,10 +7291,6 @@ class AndiGen1Controller {
         align-items: center;
         flex-wrap: wrap;
         gap: 6px;
-      }
-      .inv-dom-btn {
-        width: 100%;
-        margin-top: 4px;
       }
 
       .comp-table {

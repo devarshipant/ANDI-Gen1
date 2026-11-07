@@ -221,6 +221,21 @@
         </tr>
       </table>
 
+      <!-- Interactive widgets to exercise the Copy Test Harness feature (disclosure + modal dialog + inline handler) -->
+      <h3 style="margin-top:1.25rem;margin-bottom:0.5rem;">5. Interactive Widgets for the Test Harness (disclosure, dialog, inline handler)</h3>
+      <div style="display:flex;gap:0.65rem;flex-wrap:wrap;align-items:flex-start;">
+        <button type="button" id="faqToggle" aria-expanded="false" aria-controls="faqPanel">Shipping FAQ</button>
+        <button type="button" id="openConfirm" aria-haspopup="dialog" aria-controls="confirmDialog">Delete account…</button>
+        <button type="button" id="saveDraft" onclick="saveDraft('demo')">Save draft</button>
+      </div>
+      <div id="faqPanel" hidden style="margin-top:0.5rem;">Orders ship within 2 business days.</div>
+      <dialog id="confirmDialog" aria-labelledby="confirmTitle">
+        <h2 id="confirmTitle" style="margin-top:0;">Delete account?</h2>
+        <p>This cannot be undone.</p>
+        <button type="button" id="confirmCancel">Cancel</button>
+        <button type="button" id="confirmOk">Delete</button>
+      </dialog>
+
       <!-- Semantic ARIA role="table" with role="row", role="columnheader", role="rowheader", role="cell" -->
       <h3 style="margin-top:1.25rem;margin-bottom:0.5rem;">4. Semantic ARIA Table (<code>role="table"</code>) with Header-to-Cell Associations</h3>
       <div
@@ -250,6 +265,21 @@
 
   <script>
     window.ANDI_INITIAL_MODE = 'all';
+    // Demo page behavior for the live page (the generated test harness provides its own equivalents).
+    document.addEventListener('DOMContentLoaded', function () {
+      var faq = document.getElementById('faqToggle');
+      var panel = document.getElementById('faqPanel');
+      faq.addEventListener('click', function () {
+        var open = faq.getAttribute('aria-expanded') === 'true';
+        faq.setAttribute('aria-expanded', String(!open));
+        panel.hidden = open;
+      });
+      var dlg = document.getElementById('confirmDialog');
+      document.getElementById('openConfirm').addEventListener('click', function () { dlg.showModal(); });
+      document.getElementById('confirmCancel').addEventListener('click', function () { dlg.close(); });
+      document.getElementById('confirmOk').addEventListener('click', function () { dlg.close(); });
+    });
+    function saveDraft(name) { console.log('Draft saved: ' + name); }
   </script>
   <script src="./dist/andi-gen1.js"></script>
 </body>

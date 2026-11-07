@@ -24,7 +24,8 @@ export type InventoryCategory =
   | 'headings'
   | 'graphics'
   | 'dialogsLive'
-  | 'iframes';
+  | 'iframes'
+  | 'other';
 
 export interface DomNodeCoordinates {
   x: number;
@@ -46,43 +47,46 @@ export interface BrowserEnvironmentInfo {
 
 export interface IdRefTargetItem {
   id: string;
-  exists: boolean;
+  attribute: string;
   text: string;
-  targetTag: string;
-  targetSelector: string;
+  exists: boolean;
+  targetSelector: string | null;
+  targetTag: string | null;
   targetElement: HTMLElement | null;
 }
 
 export interface IdRefResolutionGroup {
-  attribute: 'aria-labelledby' | 'aria-describedby' | 'headers' | 'aria-errormessage' | 'aria-controls' | 'label[for]';
+  attribute: string;
   rawValue: string;
-  refs: IdRefTargetItem[];
+  items: IdRefTargetItem[];
 }
 
 export interface TableSemanticAssociation {
-  tableRoleOrTag: string;
+  tableRole: 'table' | 'grid' | 'treegrid';
   tableName: string;
-  rowIndex: number | null;
-  colIndex: number | null;
   columnHeaders: string[];
   rowHeaders: string[];
-  explicitHeadersAttr: string[];
+  rowIndex: number | null;
+  colIndex: number | null;
+  rowCount: number;
+  colCount: number;
 }
 
 export interface InventoryItem {
   id: string;
   category: Exclude<InventoryCategory, 'all'>;
-  categoryLabel: string;
+  inspectedIndex: number | null;
   element: HTMLElement;
-  recordIndex: number | null;
-  tagAndRole: string;
+  tagName: string;
+  role: string;
   semanticRole: string;
+  domSnippet: string;
   selector: string;
   accName: string;
-  screenReaderOutput: string;
-  coordinates: DomNodeCoordinates;
-  alertCount: number;
+  accDesc: string;
   details: string;
+  alertCount: number;
+  coordinates: DomNodeCoordinates;
 }
 
 export interface AndiAlert {

@@ -41,6 +41,7 @@ import {
   writeElementNote
 } from './notes-report';
 import { CspGuard } from './csp-guard';
+import { buildTestHarnessHtml, getCleanDomCode, getHarnessFileName } from './test-harness';
 
 const PAGE_HIGHLIGHT_STYLE_ID = 'andi-gen1-page-highlights-css';
 const STORAGE_KEY_THEME = 'ANDI_GEN1_THEME';
@@ -117,6 +118,7 @@ export class AndiGen1Controller {
 
   // Fly-in Element Inventory Drawer References
   private inventoryDrawerEl!: HTMLElement;
+  private inventoryTitleEl!: HTMLElement;
   private inventoryCategoryBarEl!: HTMLElement;
   private inventorySearchInput!: HTMLInputElement;
   private inventoryCountHeadingEl!: HTMLElement;
@@ -279,7 +281,7 @@ export class AndiGen1Controller {
     this.populateIframeStepperDropdown();
 
     this.records = analyzePage(pageIndex, this.mode, this.activeFrameLabel);
-    this.inventoryItems = buildPageInventory(pageIndex, this.records);
+    this.inventoryItems = buildPageInventory(pageIndex, this.records, this.mode);
 
     for (const rec of this.records) {
       this.elementToRecord.set(rec.element, rec);
@@ -696,7 +698,7 @@ export class AndiGen1Controller {
     brandBadge.textContent = 'ANDI-Gen1';
     const versionSpan = document.createElement('span');
     versionSpan.className = 'andi-version';
-    versionSpan.textContent = 'v31.2 TS';
+    versionSpan.textContent = 'v31.3 TS';
     brand.append(brandBadge, versionSpan);
 
     const moduleWrap = document.createElement('div');
@@ -1022,16 +1024,6 @@ export class AndiGen1Controller {
     }
   }
 
-  private toggleNoteDrawer(forceOpen?: boolean): void {
-    const isOpen = this.noteDrawerEl.classList.contains('open');
-    const nextState = forceOpen !== undefined ? forceOpen : !isOpen;
-    if (nextState) {
-      this.openNoteDrawer('editor');
-    } else {
-      this.noteDrawerEl.classList.remove('open');
-    }
-  }
-
   private syncNoteDrawerForRecord(rec: InspectedElementRecord): void {
     if (!this.noteTextarea || !this.activeNoteMetaEl) {
       return;
@@ -1219,6 +1211,8 @@ export class AndiGen1Controller {
       this.reportTriggerBtn.textContent = `📋 Defect Report (${totalDefectReportItems})`;
     }
 
+    // The frame pill only has a function when stepped into an iframe (it tells the tester which document is being audited).
+    // On the top document it carried no information, so it is not rendered.
     const pillFrame = document.createElement('span');
     pillFrame.className = 'pill pill-frame';
     pillFrame.textContent = `🌐 ${this.activeFrameLabel}`;
@@ -1247,19 +1241,15 @@ export class AndiGen1Controller {
     pillInventoryBtn.type = 'button';
     pillInventoryBtn.className = 'pill pill-inventory pill-actionable';
     pillInventoryBtn.textContent = `🗂 Inventory (${this.inventoryItems.length})`;
-    pillInventoryBtn.title =
-      'Click to open the Element Inventory Fly-In Drawer (Tables, Links, Buttons, Form Controls, Landmarks, Headings, Graphics, Dialogs/Live, Iframes)';
+    pillInventoryBtn.title = `Open the Element Inventory for the selected mode (${MODULE_LABELS[this.mode]}) — ${this.inventoryItems.length} element${this.inventoryItems.length === 1 ? '' : 's'}`;
     pillInventoryBtn.addEventListener('click', () => {
       this.openInventoryDrawer();
     });
 
-    this.summaryBadgeEl.append(
-      pillFrame,
-      pillElements,
-      pillAlerts,
-      pillNotesBtn,
-      pillInventoryBtn
-    );
+    if (this.steppedInIframe) {
+      this.summaryBadgeEl.append(pillFrame);
+    }
+    this.summaryBadgeEl.append(pillElements, pillAlerts, pillNotesBtn, pillInventoryBtn);
 
     this.pageAlertsListEl.textContent = '';
 
@@ -1323,9 +1313,15 @@ export class AndiGen1Controller {
     coordsSpan.className = 'el-coords';
     coordsSpan.textContent = `📍 (${rec.coordinates.x}, ${rec.coordinates.y}) ${rec.coordinates.width}×${rec.coordinates.height}px`;
 
+    // Show only the module(s) actually being run. In a single-module mode an element can still *qualify* for other
+    // modules (e.g. a hidden element that also has text qualifies for both hANDI and cANDI) but those are not run, so listing
+    // them was misleading. In ALL mode every module the element qualified for is shown.
     const modulesSpan = document.createElement('span');
     modulesSpan.className = 'el-modules';
-    modulesSpan.textContent = rec.modulesMatched.map((m) => `${m}ANDI`).join(' · ');
+    const shownModules =
+      this.mode === 'all' ? rec.modulesMatched : rec.modulesMatched.filter((m) => m === this.mode);
+    modulesSpan.textContent =
+      shownModules.length > 0 ? shownModules.map((m) => `${m}ANDI`).join(' · ') : '📝 note only';
 
     navGroup.append(prevBtn, indexBadge, nextBtn, tagCode, coordsSpan, modulesSpan);
 
@@ -1366,26 +1362,67 @@ export class AndiGen1Controller {
       rec.screenReaderOutput || '⚠ No Accessible Name / Silent Output';
     this.srOutputEl.className = rec.accName ? 'sr-output' : 'sr-output sr-missing';
 
-    // Requirement #1: Extracted DOM Node directly under Screen Reader Output + Click to Navigate to DOM Node
+    // Extracted DOM Node under Screen Reader Output: copy the full DOM code or a ready-to-run local test harness
     this.srDomNodeBarEl.textContent = '';
     const domLabel = document.createElement('span');
     domLabel.className = 'sr-sub-label';
     domLabel.textContent = '🧬 Extracted DOM Node:';
 
-    const domNodeBtn = document.createElement('button');
-    domNodeBtn.type = 'button';
-    domNodeBtn.className = 'sr-dom-node-link';
-    domNodeBtn.title = `Click to scroll to, focus, highlight, and laser-point DOM node (${rec.selector}) on the page`;
     const domCode = document.createElement('code');
+    domCode.className = 'sr-dom-code';
     domCode.textContent = rec.domSnippet;
-    const jumpHint = document.createElement('span');
-    jumpHint.className = 'sr-dom-jump-badge';
-    jumpHint.textContent = '🎯 Click to Navigate to DOM Node';
-    domNodeBtn.append(domCode, jumpHint);
-    domNodeBtn.addEventListener('click', () => {
-      this.navigateToDomElement(rec.element);
-    });
-    this.srDomNodeBarEl.append(domLabel, domNodeBtn);
+    domCode.title = `${rec.selector} — use Copy DOM Code for the complete markup`;
+
+    const domActions = document.createElement('div');
+    domActions.className = 'sr-dom-actions';
+
+    const domStatus = document.createElement('span');
+    domStatus.className = 'sr-dom-status';
+    domStatus.setAttribute('role', 'status');
+    domStatus.setAttribute('aria-live', 'polite');
+
+    const copyDomBtn = this.createButton(
+      '📋 Copy DOM Code',
+      'Copy the inspected element’s full HTML (ANDI markers removed) to the clipboard',
+      () => {
+        this.runDomAction(domStatus, 'DOM code copied', () => {
+          this.copyTextToClipboard(getCleanDomCode(rec.element), domStatus, 'DOM code copied');
+        });
+      }
+    );
+    const copyHarnessBtn = this.createButton(
+      '🧪 Copy Test Harness',
+      'Copy a standalone HTML test file (element + context, IDREF targets, CSS, event handlers and dialogs) to the clipboard',
+      () => {
+        this.runDomAction(domStatus, 'Test harness copied', () => {
+          this.copyTextToClipboard(
+            buildTestHarnessHtml(rec, this.mode, MODULE_LABELS[this.mode], this.activeFrameLabel),
+            domStatus,
+            'Test harness HTML copied — save it as .html and open it locally'
+          );
+        });
+      }
+    );
+    const downloadHarnessBtn = this.createButton(
+      '⬇ Download Test Harness',
+      'Download the standalone HTML test harness file for local testing',
+      () => {
+        this.runDomAction(domStatus, 'Test harness downloaded', () => {
+          const html = buildTestHarnessHtml(rec, this.mode, MODULE_LABELS[this.mode], this.activeFrameLabel);
+          const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = getHarnessFileName(rec);
+          a.click();
+          URL.revokeObjectURL(url);
+          domStatus.textContent = `✓ Downloaded ${getHarnessFileName(rec)}`;
+        });
+      }
+    );
+    copyDomBtn.classList.add('btn-primary');
+    domActions.append(copyDomBtn, copyHarnessBtn, downloadHarnessBtn, domStatus);
+    this.srDomNodeBarEl.append(domLabel, domCode, domActions);
 
     // Requirement #3 (Part B): IDREF Attributes (aria-labelledby, aria-describedby, headers, label[for]) & Clickable Linked Targets
     this.srIdRefsBarEl.textContent = '';
@@ -1505,6 +1542,50 @@ export class AndiGen1Controller {
     }
   }
 
+  /**
+   * Runs a DOM-copy / harness action and reports failures (e.g. cross-origin CSS, blocked clipboard) inline.
+   */
+  private runDomAction(statusEl: HTMLElement, label: string, action: () => void): void {
+    try {
+      action();
+    } catch (err) {
+      statusEl.textContent = `⚠ ${label} failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /**
+   * Copies text to the clipboard, falling back to a hidden textarea + `execCommand('copy')`
+   * for pages whose permissions policy blocks the async Clipboard API.
+   */
+  private copyTextToClipboard(text: string, statusEl: HTMLElement, okMessage: string): void {
+    const done = (): void => {
+      statusEl.textContent = `✓ ${okMessage}`;
+    };
+    const fallback = (): void => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-1000px;opacity:0;';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try {
+        ok = document.execCommand('copy');
+      } catch {
+        ok = false;
+      }
+      ta.remove();
+      statusEl.textContent = ok
+        ? `✓ ${okMessage}`
+        : '⚠ Clipboard blocked by the browser — use Download Test Harness instead';
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+
   private renderEmptyActiveElement(): void {
     this.elementHeaderEl.textContent = 'No inspectable elements found for this mode.';
     this.srOutputEl.textContent = '—';
@@ -1531,7 +1612,8 @@ export class AndiGen1Controller {
     const topRow = document.createElement('div');
     topRow.className = 'flyin-header';
     const title = document.createElement('h3');
-    title.textContent = '🗂 Page Element Inventory Array';
+    title.textContent = '🗂 Element Inventory';
+    this.inventoryTitleEl = title;
 
     const topActions = document.createElement('div');
     topActions.className = 'saved-note-actions';
@@ -1647,11 +1729,24 @@ export class AndiGen1Controller {
       { key: 'headings', label: 'Headings', icon: '📑' },
       { key: 'graphics', label: 'Graphics', icon: '🖼' },
       { key: 'dialogsLive', label: 'Dialogs/Live', icon: '💬' },
-      { key: 'iframes', label: 'Iframes', icon: '🪟' }
+      { key: 'iframes', label: 'Iframes', icon: '🪟' },
+      { key: 'other', label: 'Other', icon: '▫️' }
     ];
 
+    if (this.inventoryTitleEl) {
+      this.inventoryTitleEl.textContent = `🗂 Element Inventory — ${MODULE_LABELS[this.mode]}`;
+    }
+
+    // Only show categories that contain elements for the selected mode; fall back to "All" if the active one emptied out.
+    const visibleCategories = categoryMeta.filter(
+      (cat) => cat.key === 'all' || this.inventoryItems.some((i) => i.category === cat.key)
+    );
+    if (!visibleCategories.some((cat) => cat.key === this.activeInventoryCategory)) {
+      this.activeInventoryCategory = 'all';
+    }
+
     this.inventoryCategoryBarEl.textContent = '';
-    for (const cat of categoryMeta) {
+    for (const cat of visibleCategories) {
       const count =
         cat.key === 'all'
           ? this.inventoryItems.length
@@ -1668,13 +1763,13 @@ export class AndiGen1Controller {
     }
 
     const filtered = this.getFilteredInventoryItems();
-    this.inventoryCountHeadingEl.textContent = `Array Elements (${filtered.length} shown of ${this.inventoryItems.length} total)`;
+    this.inventoryCountHeadingEl.textContent = `${filtered.length} shown of ${this.inventoryItems.length} element${this.inventoryItems.length === 1 ? '' : 's'} for ${MODULE_LABELS[this.mode]}`;
 
     this.inventoryListEl.textContent = '';
     if (filtered.length === 0) {
       const emptyLi = document.createElement('li');
       emptyLi.className = 'empty-msg';
-      emptyLi.textContent = 'No elements match the selected inventory category or filter.';
+      emptyLi.textContent = 'No elements match this mode, category or filter.';
       this.inventoryListEl.appendChild(emptyLi);
       return;
     }
@@ -1725,18 +1820,22 @@ export class AndiGen1Controller {
       detailsRow.className = 'saved-note-meta';
       detailsRow.textContent = `${item.details} · 📍 ${item.coordinates.formatted}`;
 
-      const domRowBtn = document.createElement('button');
-      domRowBtn.type = 'button';
-      domRowBtn.className = 'sr-dom-node-link inv-dom-btn';
-      domRowBtn.title = `Click to navigate to DOM node ${item.selector}`;
+      const domRow = document.createElement('div');
+      domRow.className = 'inv-dom-row';
       const domCode = document.createElement('code');
+      domCode.className = 'sr-dom-code';
       domCode.textContent = item.domSnippet;
-      domRowBtn.appendChild(domCode);
-      domRowBtn.addEventListener('click', () => {
-        this.navigateToDomElement(item.element);
+      const copyStatus = document.createElement('span');
+      copyStatus.className = 'sr-dom-status';
+      copyStatus.setAttribute('role', 'status');
+      const copyBtn = this.createButton('📋 Copy DOM', `Copy the full HTML of ${item.selector}`, () => {
+        this.runDomAction(copyStatus, 'Copy', () => {
+          this.copyTextToClipboard(getCleanDomCode(item.element), copyStatus, 'Copied');
+        });
       });
+      domRow.append(domCode, copyBtn, copyStatus);
 
-      li.append(headerRow, nameRow, detailsRow, domRowBtn);
+      li.append(headerRow, nameRow, detailsRow, domRow);
       this.inventoryListEl.appendChild(li);
     });
   }
@@ -2403,38 +2502,36 @@ export class AndiGen1Controller {
         font-weight: 800;
         color: var(--text-muted);
       }
-      .sr-dom-node-link {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        flex-wrap: wrap;
+      .sr-dom-code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        font-weight: 700;
+        color: var(--text-main);
         background: var(--bg-panel);
-        color: var(--accent);
         border: 1.5px solid var(--border-color);
         border-radius: 5px;
         padding: 3px 8px;
-        font-size: 11.5px;
-        font-weight: 700;
-        cursor: pointer;
-        text-align: left;
+        max-width: 100%;
+        overflow-wrap: anywhere;
       }
-      .sr-dom-node-link:hover, .sr-dom-node-link:focus-visible {
-        outline: 2.5px solid var(--accent);
-        border-color: var(--accent);
+      .sr-dom-actions {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        width: 100%;
       }
-      .sr-dom-node-link code {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        color: var(--text-main);
-        font-weight: 700;
-      }
-      .sr-dom-jump-badge {
-        background: #065f46;
-        color: #ffffff;
-        border: 1px solid #6ee7b7;
-        border-radius: 4px;
-        padding: 1px 6px;
-        font-size: 10.5px;
+      .sr-dom-status {
+        font-size: 11px;
         font-weight: 800;
+        color: var(--accent);
+      }
+      .inv-dom-row {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 4px;
       }
 
       /* Requirement #3 (Part B): IDREF Attributes & Linked Items in Screen Reader Output */
@@ -2557,10 +2654,6 @@ export class AndiGen1Controller {
         align-items: center;
         flex-wrap: wrap;
         gap: 6px;
-      }
-      .inv-dom-btn {
-        width: 100%;
-        margin-top: 4px;
       }
 
       .comp-table {

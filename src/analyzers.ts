@@ -251,13 +251,14 @@ export function analyzePage(
 }
 
 /**
- * Builds a categorized array of interface elements on the page for the
- * Element Inventory Fly-In Drawer (tables, links, buttons, formControls, landmarks,
- * headings, graphics, dialogsLive, iframes).
+ * Builds a categorized array of interface elements for the Element Inventory Fly-In Drawer.
+ * The inventory is scoped to the SELECTED ANDI mode: in a specific mode (f, g, l, t, s, c, h, i)
+ * only elements that module actually inspects are listed; `all` lists every categorized visible element.
  */
 export function buildPageInventory(
   pageIndex: PageIndex,
-  records: InspectedElementRecord[]
+  records: InspectedElementRecord[],
+  mode: AndiMode
 ): InventoryItem[] {
   const recordByElement = new Map<HTMLElement, InspectedElementRecord>();
   for (const r of records) {
@@ -267,14 +268,41 @@ export function buildPageInventory(
   const inventory: InventoryItem[] = [];
   let invId = 0;
 
-  for (const el of pageIndex.visibleElements) {
+  const candidatePool =
+    mode === 'h' ? pageIndex.allElements : pageIndex.visibleElements;
+  const visibleSet = new Set<HTMLElement>(pageIndex.visibleElements);
+
+  for (const el of candidatePool) {
     const tag = el.tagName.toLowerCase();
     const role = getValidRole(el);
     const rec = recordByElement.get(el) || null;
 
-    const categories = classifyInventoryCategories(el, tag, role);
-    if (categories.length === 0) {
-      continue;
+    let categories = classifyInventoryCategories(el, tag, role);
+
+    if (mode === 'all') {
+      if (!visibleSet.has(el) || categories.length === 0) {
+        continue;
+      }
+    } else {
+      const matched = getMatchedModulesForElement(
+        el,
+        tag,
+        role,
+        getFocusability(el).isFocusable,
+        visibleSet.has(el),
+        pageIndex
+      );
+      if (!matched.includes(mode)) {
+        continue;
+      }
+      if (categories.length === 0) {
+        // Table cells are summarized by their parent table; every other uncategorized
+        // element inspected by this module is listed under "Other".
+        if (mode === 't') {
+          continue;
+        }
+        categories = ['other'];
+      }
     }
 
     const computed = rec ? null : computeAccessibleData(el, pageIndex);
@@ -286,10 +314,11 @@ export function buildPageInventory(
     const coordinates = rec ? rec.coordinates : getElementCoordinates(el);
     const alertCount = rec ? rec.alerts.length : 0;
     const tableAssoc = rec ? rec.tableAssociation : computed!.tableAssociation;
+    const contrast = rec ? rec.addOnProps['contrast'] || '' : '';
 
     for (const category of categories) {
       invId += 1;
-      const details = formatInventoryDetails(el, tag, role, category, tableAssoc);
+      const details = formatInventoryDetails(el, tag, role, category, tableAssoc, contrast);
       inventory.push({
         id: `inv-${invId}`,
         category,
@@ -410,9 +439,14 @@ function formatInventoryDetails(
   tag: string,
   role: string,
   category: InventoryCategory,
-  tableAssoc: InspectedElementRecord['tableAssociation']
+  tableAssoc: InspectedElementRecord['tableAssociation'],
+  contrast = ''
 ): string {
   switch (category) {
+    case 'other': {
+      const base = `<${tag}${role ? ` role="${role}"` : ''}>`;
+      return contrast ? `${base} • contrast ${contrast}` : base;
+    }
     case 'tables': {
       const kind = tag === 'table' ? '<table>' : `[role="${role}"]`;
       if (tableAssoc) {

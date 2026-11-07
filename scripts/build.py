@@ -23,6 +23,8 @@ MODULE_ORDER = [
     SRC_DIR / "dom-index.ts",
     SRC_DIR / "acc-name.ts",
     SRC_DIR / "notes-report.ts",
+    SRC_DIR / "harness-runtime.ts",
+    SRC_DIR / "test-harness.ts",
     ANDI_DIR / "fandi.ts",
     ANDI_DIR / "gandi.ts",
     ANDI_DIR / "landi.ts",
@@ -107,7 +109,7 @@ def strip_typescript(source: str) -> str:
 
     # Remove `as Type` casts
     code = re.sub(
-        r"\s+as\s+(?:const|unknown\s+as\s+\{[^}]+\}|unknown\s+as\s+Record<[^>]+>|HTMLElement\s*\|\s*null|HTMLSelectElement\s*\|\s*null|HTMLInputElement\s*\|\s*HTMLButtonElement|HTMLElement\[\]|HTMLElement|HTMLLabelElement|HTMLInputElement|HTMLSelectElement|HTMLButtonElement|HTMLTextAreaElement|HTMLImageElement|HTMLIFrameElement|SVGSVGElement|SVGLineElement|SecurityPolicyViolationEvent|ThemeMode\s*\|\s*null|DockPosition\s*\|\s*null|ThemeMode|DockPosition|Array<[^>]+>|\w+\[\]|AndiMode|AlertLevel|Record<[^>]+>)",
+        r"\s+as\s+(?:const|any\[\]|any\b|unknown\s+as\s+\{[^}]+\}|unknown\s+as\s+Record<[^>]+>|HTMLElement\s*\|\s*null|HTMLSelectElement\s*\|\s*null|HTMLInputElement\s*\|\s*HTMLButtonElement|HTMLElement\[\]|HTMLElement|HTMLLabelElement|HTMLInputElement|HTMLSelectElement|HTMLButtonElement|HTMLTextAreaElement|HTMLImageElement|HTMLIFrameElement|SVGSVGElement|SVGLineElement|SecurityPolicyViolationEvent|ThemeMode\s*\|\s*null|DockPosition\s*\|\s*null|ThemeMode|DockPosition|Array<[^>]+>|\w+\[\]|AndiMode|AlertLevel|Record<[^>]+>)",
         "",
         code,
     )
@@ -176,6 +178,9 @@ def strip_function_signatures(code: str) -> str:
         r":\s*HTMLImageElement",
         r":\s*AndiAlert\[\]",
         r":\s*HTMLElement\[\]",
+        r":\s*Element\[\]",
+        r":\s*any\[\]",
+        r":\s*any\b",
         r":\s*string\[\]",
         r":\s*PageIndex",
         r":\s*DefectReport",
@@ -238,7 +243,7 @@ def main() -> None:
             legacy_file.unlink()
 
     bundle_parts = [
-        "/*! ANDI-Gen1 v31.2.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */",
+        "/*! ANDI-Gen1 v31.3.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */",
         "(function() {",
         "  'use strict';",
     ]
@@ -268,7 +273,7 @@ def main() -> None:
     manifest = {
         "manifest_version": 3,
         "name": "ANDI-Gen1 — Accessible Name & Description Inspector",
-        "version": "31.2.0",
+        "version": "31.3.0",
         "description": "TypeScript rewrite of SSA ANDI with DOM Node Navigation, Semantic Role Detection, Element Inventory Drawer, Notes & Screenshots.",
         "permissions": ["activeTab", "scripting"],
         "icons": {
