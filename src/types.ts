@@ -10,7 +10,7 @@ export type AndiMode = 'f' | 'g' | 'l' | 't' | 's' | 'c' | 'h' | 'i' | 'all';
 
 export type AlertLevel = 'danger' | 'warning' | 'caution';
 
-export type DockPosition = 'top' | 'bottom' | 'left' | 'right' | 'dom';
+export type DockPosition = 'top' | 'left' | 'right';
 
 export type ThemeMode = 'dark' | 'light';
 

@@ -87,7 +87,7 @@ def strip_typescript(source: str) -> str:
 
         # Remove type annotations on initialized class fields (`prop: Type = val` -> `prop = val`)
         line = re.sub(
-            r"^(\s*\w+)\s*:\s*(?:AndiMode|ThemeMode|DockPosition|Document|InventoryCategory\s*\|\s*'all'|InventoryItem\[\]|CspViolationRecord\[\]|InspectedElementRecord\[\]|HTMLIFrameElement\[\]|HTMLIFrameElement\s*\|\s*null|HTMLElement\s*\|\s*null|ShadowRoot\s*\|\s*null|SVGSVGElement\s*\|\s*null|SVGLineElement\s*\|\s*null|\(\(e:\s*Event\)\s*=>\s*void\)\s*\|\s*null)\s*=",
+            r"^(\s*\w+)\s*:\s*(?:AndiMode|ThemeMode|DockPosition|Document|InventoryCategory\s*\|\s*'all'|InventoryItem\[\]|CspViolationRecord\[\]|InspectedElementRecord\[\]|HTMLIFrameElement\[\]|HTMLIFrameElement\s*\|\s*null|HTMLElement\s*\|\s*null|ShadowRoot\s*\|\s*null|SVGSVGElement\s*\|\s*null|SVGLineElement\s*\|\s*null|ResizeObserver\s*\|\s*null|\(\(e:\s*Event\)\s*=>\s*void\)\s*\|\s*null)\s*=",
             r"\1 =",
             line,
         )
@@ -195,6 +195,7 @@ def strip_function_signatures(code: str) -> str:
         r":\s*Node",
         r":\s*Event",
         r":\s*MouseEvent",
+        r":\s*PointerEvent",
         r":\s*FocusEvent",
         r":\s*KeyboardEvent",
         r":\s*RgbColor",

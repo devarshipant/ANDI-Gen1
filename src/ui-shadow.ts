@@ -2,7 +2,7 @@
  * ANDI-Gen1 — Shadow DOM UI Controller (High-Contrast WCAG AAA & Ergonomic 3-Zone Workflow)
  * Implements:
  * 1. Actionable `Notes (x)` pill that opens the Fly-In Notes Drawer with ALL saved notes + active note editor
- * 2. Eliminates redundant `+Add Note` / toolbar `Note` duplication (single global `Notes (x)` + contextual `📝 Note` on element)
+ * 2. Eliminates redundant `+Add Note` / toolbar `Note` duplication (single global `Notes (x)` + contextual `Note` on element)
  * 3. Visual Defect Report Modal that renders embedded PNG screenshots (`<img>`), plus HTML/MD/JSON/CSV export
  * 4. Defect Report strictly shows ANDI-detected defects (`alerts.length > 0`) PLUS any tester notes (`note !== null`)
  *    with exact DOM coordinates (`x, y, pageX, pageY, width × height`), browser/OS info, and timestamps
@@ -15,6 +15,7 @@ import {
   AndiMode,
   DefectReport,
   DockPosition,
+  IdRefResolutionGroup,
   InspectedElementRecord,
   InventoryCategory,
   InventoryItem,
@@ -41,11 +42,20 @@ import {
   writeElementNote
 } from './notes-report';
 import { CspGuard } from './csp-guard';
-import { buildTestHarnessHtml, getCleanDomCode, getHarnessFileName } from './test-harness';
+import { getCleanDomCode } from './test-harness';
 
 const PAGE_HIGHLIGHT_STYLE_ID = 'andi-gen1-page-highlights-css';
 const STORAGE_KEY_THEME = 'ANDI_GEN1_THEME';
 const STORAGE_KEY_DOCK = 'ANDI_GEN1_DOCK';
+const STORAGE_KEY_SIZE_TOP = 'ANDI_GEN1_SIZE_TOP';
+const STORAGE_KEY_SIZE_SIDE = 'ANDI_GEN1_SIZE_SIDE';
+
+// Resize limits for the user-draggable inspector edge.
+const DEFAULT_TOP_HEIGHT = 240;
+const MIN_TOP_HEIGHT = 90;
+const DEFAULT_SIDE_WIDTH = 440;
+const MIN_SIDE_WIDTH = 300;
+const RESIZE_KEYBOARD_STEP = 16;
 
 // Requirement: Move ALL mode as the last item in droplist
 const DROPLIST_MODES_ORDER: AndiMode[] = ['f', 'g', 'l', 't', 's', 'c', 'h', 'i', 'all'];
@@ -72,8 +82,15 @@ export class AndiGen1Controller {
   private highlightedIdRefEl: HTMLElement | null = null;
 
   // Theme & Dock settings
-  private theme: ThemeMode = 'dark';
+  private theme: ThemeMode = 'light';
   private dock: DockPosition = 'top';
+
+  // User-adjustable inspector size (height when docked top, width when docked left/right).
+  // topHeight 0 means "auto" — the grid keeps its content-driven max-height until the
+  // tester actually drags the edge, so a sparse page still gets a compact inspector.
+  private topHeight = 0;
+  private sideWidth = DEFAULT_SIDE_WIDTH;
+  private resizeHandleEl!: HTMLElement;
 
   // Iframe Step-In state
   private activeDocument: Document = document;
@@ -87,6 +104,7 @@ export class AndiGen1Controller {
   private hostEl: HTMLElement | null = null;
   private shadow: ShadowRoot | null = null;
   private barEl!: HTMLElement;
+  private barResizeObserver: ResizeObserver | null = null;
   private laserSvg: SVGSVGElement | null = null;
   private laserLine: SVGLineElement | null = null;
 
@@ -98,11 +116,11 @@ export class AndiGen1Controller {
   private elementHeaderEl!: HTMLElement;
   private srOutputEl!: HTMLElement;
   private srDomNodeBarEl!: HTMLElement;
-  private srIdRefsBarEl!: HTMLElement;
-  private srSemanticAssocBarEl!: HTMLElement;
-  private componentsTbodyEl!: HTMLElement;
+  private detailsTbodyEl!: HTMLElement;
   private elementAlertsListEl!: HTMLElement;
   private pageAlertsListEl!: HTMLElement;
+  private pageAlertsPanelEl!: HTMLElement;
+  private gridEl!: HTMLElement;
 
   // Fly-in Note Drawer References
   private noteDrawerEl!: HTMLElement;
@@ -126,13 +144,11 @@ export class AndiGen1Controller {
   private activeInventoryCategory: InventoryCategory | 'all' = 'all';
   private inventorySearchQuery = '';
 
-  // Modals (CSP Resolver & Visual/Code Defect Report)
+  // Modal (Visual/Code Defect Report)
   private reportModalEl!: HTMLElement;
   private reportVisualContainer!: HTMLElement;
   private reportTextarea!: HTMLTextAreaElement;
   private reportFormatSelect!: HTMLSelectElement;
-  private cspModalEl!: HTMLElement;
-  private cspBodyEl!: HTMLElement;
 
   // Bound delegated handlers
   private boundMouseOver: (e: MouseEvent) => void;
@@ -154,8 +170,16 @@ export class AndiGen1Controller {
         this.theme = savedTheme;
       }
       const savedDock = window.localStorage.getItem(STORAGE_KEY_DOCK) as DockPosition | null;
-      if (savedDock && ['top', 'bottom', 'left', 'right', 'dom'].includes(savedDock)) {
+      if (savedDock && ['top', 'left', 'right'].includes(savedDock)) {
         this.dock = savedDock;
+      }
+      const savedTop = Number(window.localStorage.getItem(STORAGE_KEY_SIZE_TOP));
+      if (Number.isFinite(savedTop) && savedTop >= MIN_TOP_HEIGHT) {
+        this.topHeight = savedTop;
+      }
+      const savedSide = Number(window.localStorage.getItem(STORAGE_KEY_SIZE_SIDE));
+      if (Number.isFinite(savedSide) && savedSide >= MIN_SIDE_WIDTH) {
+        this.sideWidth = savedSide;
       }
     } catch {
       // Ignore storage errors
@@ -174,6 +198,8 @@ export class AndiGen1Controller {
     this.attachDelegatedEvents(document);
     this.applyDockAndTheme();
     this.runScan();
+    this.observeBarResize();
+    this.syncTopDockOffset();
   }
 
   public setMode(mode: AndiMode): void {
@@ -194,7 +220,7 @@ export class AndiGen1Controller {
     }
     const themeBtn = this.shadow?.getElementById('andi-theme-btn') as HTMLButtonElement | null;
     if (themeBtn) {
-      themeBtn.textContent = this.theme === 'dark' ? '☀️ Light Theme' : '🌙 Dark Theme';
+      themeBtn.textContent = this.theme === 'dark' ? 'Light Theme' : 'Dark Theme';
     }
     this.applyDockAndTheme();
   }
@@ -214,6 +240,7 @@ export class AndiGen1Controller {
   }
 
   public destroy(): void {
+    this.disconnectBarResize();
     this.detachDelegatedEvents(this.activeDocument);
     this.detachDelegatedEvents(document);
     this.cspGuard.detach(document);
@@ -315,8 +342,8 @@ export class AndiGen1Controller {
     defaultOpt.value = '';
     defaultOpt.textContent =
       this.detectedIframes.length > 0
-        ? `🖼 Iframes (${this.detectedIframes.length}) — Step In...`
-        : `🖼 Iframes (0 detected)`;
+        ? `Iframes (${this.detectedIframes.length}) — Step In…`
+        : `Iframes (0 detected)`;
     this.iframeStepperSelect.appendChild(defaultOpt);
     this.iframeStepperSelect.disabled = this.detectedIframes.length === 0;
 
@@ -327,7 +354,7 @@ export class AndiGen1Controller {
       const label = ifr.id
         ? `#${ifr.id}`
         : ifr.getAttribute('title') || ifr.getAttribute('src') || `iframe #${idx + 1}`;
-      opt.textContent = `${accessible ? '↪ Step into' : '🔒 Cross-Origin'}: ${label}`;
+      opt.textContent = `${accessible ? '↪ Step into' : 'Cross-origin'}: ${label}`;
       this.iframeStepperSelect.appendChild(opt);
     });
   }
@@ -421,7 +448,6 @@ export class AndiGen1Controller {
     rec.note = readElementNote(rec.element, rec.selector, this.activeFrameLabel);
     this.renderActiveElementInspection(rec);
     this.syncNoteDrawerForRecord(rec);
-    this.positionDomInlineDock(rec.element);
     this.drawLaserToElement(rec.element);
   }
 
@@ -517,7 +543,7 @@ export class AndiGen1Controller {
         position: relative;
       }
       [data-andi-note]::after {
-        content: "📝 Note" !important;
+        content: "Note" !important;
         position: absolute !important;
         top: -14px !important;
         right: -4px !important;
@@ -610,48 +636,238 @@ export class AndiGen1Controller {
     this.hostEl.setAttribute('data-dock', this.dock);
 
     this.resetBodyMargins();
+    this.applyBarSize();
     if (this.dock === 'top') {
-      document.body.style.marginTop = '265px';
       this.hostEl.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483646;';
-    } else if (this.dock === 'bottom') {
-      document.body.style.marginBottom = '265px';
-      this.hostEl.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:2147483646;';
+      this.syncTopDockOffset();
     } else if (this.dock === 'left') {
-      document.body.style.marginLeft = '440px';
+      document.body.style.marginLeft = `${this.sideWidth}px`;
       this.hostEl.style.cssText =
-        'position:fixed;top:0;bottom:0;left:0;width:440px;z-index:2147483646;';
+        `position:fixed;top:0;bottom:0;left:0;width:${this.sideWidth}px;z-index:2147483646;`;
     } else if (this.dock === 'right') {
-      document.body.style.marginRight = '440px';
+      document.body.style.marginRight = `${this.sideWidth}px`;
       this.hostEl.style.cssText =
-        'position:fixed;top:0;bottom:0;right:0;width:440px;z-index:2147483646;';
-    } else if (this.dock === 'dom') {
-      const activeRec = this.records[this.activeIndex - 1];
-      if (activeRec) {
-        this.positionDomInlineDock(activeRec.element);
-      } else {
-        this.hostEl.style.cssText =
-          'position:fixed;bottom:16px;right:16px;width:580px;z-index:2147483646;';
-      }
+        `position:fixed;top:0;bottom:0;right:0;width:${this.sideWidth}px;z-index:2147483646;`;
+    }
+    this.syncResizeHandleState();
+  }
+
+  /**
+   * Applies the user's chosen size. Docked to the top the draggable dimension is the content
+   * grid's height (the header stays a fixed cost); docked to a side it is the host width.
+   */
+  private applyBarSize(): void {
+    if (!this.gridEl) {
+      return;
+    }
+    if (this.dock === 'top' && this.topHeight > 0) {
+      this.topHeight = Math.min(Math.max(this.topHeight, MIN_TOP_HEIGHT), this.maxTopHeight());
+      this.gridEl.style.height = `${this.topHeight}px`;
+      this.gridEl.style.maxHeight = 'none';
+    } else {
+      this.gridEl.style.removeProperty('height');
+      this.gridEl.style.removeProperty('max-height');
     }
   }
 
-  private positionDomInlineDock(targetEl: HTMLElement): void {
-    if (this.dock !== 'dom' || !this.hostEl) {
+  /** Current grid height in px, whether it is user-set or still content-driven. */
+  private currentTopHeight(): number {
+    if (this.topHeight > 0) {
+      return this.topHeight;
+    }
+    return this.gridEl ? Math.round(this.gridEl.getBoundingClientRect().height) : DEFAULT_TOP_HEIGHT;
+  }
+
+  private maxTopHeight(): number {
+    return Math.max(MIN_TOP_HEIGHT, Math.round(window.innerHeight * 0.8));
+  }
+
+  private maxSideWidth(): number {
+    return Math.max(MIN_SIDE_WIDTH, Math.round(window.innerWidth * 0.7));
+  }
+
+  /**
+   * Keeps the handle's orientation, help text and ARIA range in sync with the current dock.
+   */
+  private syncResizeHandleState(): void {
+    if (!this.resizeHandleEl) {
       return;
     }
-    let rect = targetEl.getBoundingClientRect();
-    if (this.steppedInIframe) {
-      const ifrRect = this.steppedInIframe.getBoundingClientRect();
-      rect = new DOMRect(
-        ifrRect.left + rect.left,
-        ifrRect.top + rect.top,
-        rect.width,
-        rect.height
+    const isTop = this.dock === 'top';
+    const value = isTop ? this.currentTopHeight() : this.sideWidth;
+    const min = isTop ? MIN_TOP_HEIGHT : MIN_SIDE_WIDTH;
+    const max = isTop ? this.maxTopHeight() : this.maxSideWidth();
+    const dimension = isTop ? 'height' : 'width';
+    this.resizeHandleEl.setAttribute('aria-orientation', isTop ? 'horizontal' : 'vertical');
+    this.resizeHandleEl.setAttribute('aria-valuenow', String(Math.round(value)));
+    this.resizeHandleEl.setAttribute('aria-valuemin', String(min));
+    this.resizeHandleEl.setAttribute('aria-valuemax', String(max));
+    this.resizeHandleEl.setAttribute(
+      'aria-label',
+      `Resize ANDI-Gen1 ${dimension} — drag, or use arrow keys. Press Home to reset.`
+    );
+    this.resizeHandleEl.title = `Drag to change the inspector ${dimension} (arrow keys also work, Home resets)`;
+  }
+
+  private persistBarSize(): void {
+    try {
+      window.localStorage.setItem(STORAGE_KEY_SIZE_TOP, String(Math.round(this.topHeight)));
+      window.localStorage.setItem(STORAGE_KEY_SIZE_SIDE, String(Math.round(this.sideWidth)));
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Resizes by `delta` CSS pixels along the current dock's axis, clamped to sane limits.
+   * The first adjustment converts the top dock from auto height to an explicit one.
+   */
+  private resizeBarBy(delta: number): void {
+    if (this.dock === 'top') {
+      this.topHeight = Math.min(
+        Math.max(this.currentTopHeight() + delta, MIN_TOP_HEIGHT),
+        this.maxTopHeight()
+      );
+    } else {
+      this.sideWidth = Math.min(
+        Math.max(this.sideWidth + delta, MIN_SIDE_WIDTH),
+        this.maxSideWidth()
       );
     }
-    const topPos = Math.min(Math.max(rect.bottom + 10, 12), window.innerHeight - 290);
-    const leftPos = Math.min(Math.max(rect.left, 12), Math.max(window.innerWidth - 600, 12));
-    this.hostEl.style.cssText = `position:fixed;top:${Math.round(topPos)}px;left:${Math.round(leftPos)}px;width:580px;z-index:2147483646;`;
+    this.applyDockAndTheme();
+  }
+
+  /** Restores the default: auto (content-driven) height on top, 440px on the sides. */
+  private resetBarSize(): void {
+    if (this.dock === 'top') {
+      this.topHeight = 0;
+    } else {
+      this.sideWidth = DEFAULT_SIDE_WIDTH;
+    }
+    this.applyDockAndTheme();
+    this.persistBarSize();
+  }
+
+  /**
+   * Draggable + keyboard-operable edge used to shrink the inspector so more of the page
+   * under test stays visible. Exposed as a `separator` so it is reachable by keyboard and
+   * announced with its current size, matching the accessibility bar ANDI itself enforces.
+   */
+  private buildResizeHandle(): HTMLElement {
+    const handle = document.createElement('div');
+    handle.className = 'andi-resizer';
+    handle.setAttribute('role', 'separator');
+    handle.tabIndex = 0;
+    this.resizeHandleEl = handle;
+
+    let dragging = false;
+    let startPos = 0;
+    let startSize = 0;
+
+    const onPointerMove = (ev: PointerEvent) => {
+      if (!dragging) {
+        return;
+      }
+      ev.preventDefault();
+      if (this.dock === 'top') {
+        this.topHeight = startSize + (ev.clientY - startPos);
+      } else if (this.dock === 'left') {
+        this.sideWidth = startSize + (ev.clientX - startPos);
+      } else {
+        this.sideWidth = startSize - (ev.clientX - startPos);
+      }
+      this.resizeBarBy(0);
+    };
+
+    const endDrag = (ev: PointerEvent) => {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      handle.classList.remove('dragging');
+      handle.releasePointerCapture?.(ev.pointerId);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', endDrag);
+      this.persistBarSize();
+    };
+
+    handle.addEventListener('pointerdown', (ev) => {
+      dragging = true;
+      startPos = this.dock === 'top' ? ev.clientY : ev.clientX;
+      startSize = this.dock === 'top' ? this.currentTopHeight() : this.sideWidth;
+      handle.classList.add('dragging');
+      handle.setPointerCapture?.(ev.pointerId);
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', endDrag);
+      ev.preventDefault();
+    });
+
+    handle.addEventListener('keydown', (ev) => {
+      const isTop = this.dock === 'top';
+      let delta = 0;
+      if (ev.key === (isTop ? 'ArrowUp' : 'ArrowLeft')) {
+        delta = this.dock === 'right' ? RESIZE_KEYBOARD_STEP : -RESIZE_KEYBOARD_STEP;
+      } else if (ev.key === (isTop ? 'ArrowDown' : 'ArrowRight')) {
+        delta = this.dock === 'right' ? -RESIZE_KEYBOARD_STEP : RESIZE_KEYBOARD_STEP;
+      } else if (ev.key === 'Home') {
+        ev.preventDefault();
+        this.resetBarSize();
+        return;
+      } else {
+        return;
+      }
+      ev.preventDefault();
+      this.resizeBarBy(delta);
+      this.persistBarSize();
+    });
+
+    handle.addEventListener('dblclick', () => {
+      this.resetBarSize();
+    });
+
+    return handle;
+  }
+
+  /**
+   * Pushes the page down by the inspector's real rendered height (instead of a fixed guess)
+   * so the top-most page elements stay visible without scrolling while docked to the top.
+   */
+  private syncTopDockOffset(): void {
+    if (this.dock !== 'top' || !this.hostEl) {
+      return;
+    }
+    const height = Math.ceil(this.hostEl.getBoundingClientRect().height);
+    if (height <= 0) {
+      return;
+    }
+    document.body.style.marginTop = `${height}px`;
+    // Keeps in-page anchor jumps and focus scrolling clear of the fixed inspector.
+    document.documentElement.style.scrollPaddingTop = `${height}px`;
+    // While the height is still content-driven, the measurement is only trustworthy once
+    // layout has settled, so refresh the handle's reported value here too.
+    this.syncResizeHandleState();
+    if (window.scrollY > 0 && window.scrollY <= height) {
+      window.scrollTo(window.scrollX, 0);
+    }
+  }
+
+  /**
+   * Re-measures the top dock whenever the inspector's own content changes height.
+   */
+  private observeBarResize(): void {
+    this.disconnectBarResize();
+    if (typeof ResizeObserver === 'undefined' || !this.barEl) {
+      return;
+    }
+    this.barResizeObserver = new ResizeObserver(() => {
+      this.syncTopDockOffset();
+    });
+    this.barResizeObserver.observe(this.barEl);
+  }
+
+  private disconnectBarResize(): void {
+    this.barResizeObserver?.disconnect();
+    this.barResizeObserver = null;
   }
 
   private resetBodyMargins(): void {
@@ -659,6 +875,7 @@ export class AndiGen1Controller {
     document.body.style.removeProperty('margin-bottom');
     document.body.style.removeProperty('margin-left');
     document.body.style.removeProperty('margin-right');
+    document.documentElement.style.removeProperty('scroll-padding-top');
   }
 
   private mountShadowUI(): void {
@@ -682,7 +899,7 @@ export class AndiGen1Controller {
     // TOP COMMAND BAR — Redesigned into 3 Ergonomic Functional Zones
     // Zone 1 (Left): Brand + Mode Selector + Iframe Context
     // Zone 2 (Center): Live Audit Telemetry (`Elements`, `Alerts`, Actionable `Notes (x)`, `Defect Report`)
-    // Zone 3 (Right): Environment & Window Chrome (`CSP`, `Dock`, `Theme`, `Close`)
+    // Zone 3 (Right): Environment & Window Chrome (`Dock`, `Theme`, `Close`)
     // =========================================================================
     const header = document.createElement('header');
     header.className = 'andi-header';
@@ -751,7 +968,7 @@ export class AndiGen1Controller {
     this.summaryBadgeEl.className = 'andi-summary-pills';
 
     this.reportTriggerBtn = this.createButton(
-      '📋 Defect Report',
+      'Defect Report',
       'Open Visual & Exportable Defect Report (ANDI Alerts + Notes with Coordinates & Screenshots)',
       () => {
         this.openReportModal();
@@ -761,27 +978,17 @@ export class AndiGen1Controller {
 
     zoneTelemetry.append(this.summaryBadgeEl, this.reportTriggerBtn);
 
-    // --- ZONE 3: Workspace & Environment Utilities (`CSP`, `Dock`, `Theme`, `Close`) ---
+    // --- ZONE 3: Workspace & Environment Utilities (`Dock`, `Theme`, `Close`) ---
     const zoneChrome = document.createElement('div');
     zoneChrome.className = 'toolbar-zone zone-chrome';
-
-    const cspBtn = this.createButton(
-      '🛡️ CSP',
-      'Inspect & Resolve Content Security Policy',
-      () => {
-        this.openCspModal();
-      }
-    );
 
     const dockSelect = document.createElement('select');
     dockSelect.id = 'andi-dock-select';
     dockSelect.setAttribute('aria-label', 'Pin ANDI-Gen1 Position');
     const dockOptions: Array<{ value: DockPosition; label: string }> = [
-      { value: 'top', label: '📌 Dock: Top' },
-      { value: 'bottom', label: '📌 Dock: Bottom' },
-      { value: 'left', label: '📌 Dock: Left Explorer' },
-      { value: 'right', label: '📌 Dock: Right Explorer' },
-      { value: 'dom', label: '📌 Dock: DOM Inline' }
+      { value: 'top', label: 'Dock: Top' },
+      { value: 'left', label: 'Dock: Left' },
+      { value: 'right', label: 'Dock: Right' }
     ];
     dockOptions.forEach((d) => {
       const opt = document.createElement('option');
@@ -797,7 +1004,7 @@ export class AndiGen1Controller {
     });
 
     const themeBtn = this.createButton(
-      this.theme === 'dark' ? '☀️ Light Theme' : '🌙 Dark Theme',
+      this.theme === 'dark' ? 'Light Theme' : 'Dark Theme',
       'Switch between High-Contrast Dark and Light layout themes',
       () => {
         this.setTheme(this.theme === 'dark' ? 'light' : 'dark');
@@ -808,7 +1015,7 @@ export class AndiGen1Controller {
     const closeBtn = this.createButton('✕ Close', 'Close ANDI-Gen1', () => this.destroy());
     closeBtn.classList.add('btn-danger');
 
-    zoneChrome.append(cspBtn, dockSelect, themeBtn, closeBtn);
+    zoneChrome.append(dockSelect, themeBtn, closeBtn);
     header.append(zoneScope, zoneTelemetry, zoneChrome);
     bar.appendChild(header);
 
@@ -830,53 +1037,57 @@ export class AndiGen1Controller {
     srBox.className = 'sr-box';
     const srTitle = document.createElement('div');
     srTitle.className = 'sr-title';
-    srTitle.textContent = '🔊 Screen Reader Spoken Output:';
+    srTitle.textContent = 'Screen Reader Spoken Output';
     this.srOutputEl = document.createElement('div');
     this.srOutputEl.className = 'sr-output';
 
-    // Requirement #1: Extracted DOM Node under Screen Reader Output (click to navigate to DOM node)
+    // Unified element details: ARIA attributes, IDREF associations and computed
+    // properties in one deduplicated table, shown before the extracted code.
+    const detailsLabel = document.createElement('span');
+    detailsLabel.className = 'sr-sub-label';
+    detailsLabel.textContent = 'Element Details';
+
+    const detailsTable = document.createElement('table');
+    detailsTable.className = 'comp-table';
+    this.detailsTbodyEl = document.createElement('tbody');
+    detailsTable.appendChild(this.detailsTbodyEl);
+
+    // Extracted DOM code + copy action, rendered after the element's ARIA / IDREF details
     this.srDomNodeBarEl = document.createElement('div');
     this.srDomNodeBarEl.className = 'sr-dom-node-bar';
-
-    // Requirement #3 (Part B): IDREF attributes (aria-labelledby, aria-describedby, headers, label[for]) with clickable target links
-    this.srIdRefsBarEl = document.createElement('div');
-    this.srIdRefsBarEl.className = 'sr-idrefs-bar';
-
-    // Requirement #2: Semantic association bar (e.g. role="table" / role="grid" header associations)
-    this.srSemanticAssocBarEl = document.createElement('div');
-    this.srSemanticAssocBarEl.className = 'sr-semantic-bar';
 
     srBox.append(
       srTitle,
       this.srOutputEl,
-      this.srDomNodeBarEl,
-      this.srIdRefsBarEl,
-      this.srSemanticAssocBarEl
+      detailsLabel,
+      detailsTable,
+      this.srDomNodeBarEl
     );
-
-    const compTable = document.createElement('table');
-    compTable.className = 'comp-table';
-    this.componentsTbodyEl = document.createElement('tbody');
-    compTable.appendChild(this.componentsTbodyEl);
 
     this.elementAlertsListEl = document.createElement('ul');
     this.elementAlertsListEl.className = 'alert-list';
 
-    colInspect.append(this.elementHeaderEl, srBox, compTable, this.elementAlertsListEl);
+    colInspect.append(this.elementHeaderEl, srBox, this.elementAlertsListEl);
 
-    // Panel 2: Page Accessibility Alerts Panel
+    // Panel 2: Page Accessibility Alerts Panel — only rendered when alerts exist, so a
+    // clean page gives Panel 1 the full width of the inspector.
     const colAlerts = document.createElement('div');
     colAlerts.className = 'andi-panel';
+    this.pageAlertsPanelEl = colAlerts;
     const alertsHeading = document.createElement('h2');
     alertsHeading.className = 'panel-title';
-    alertsHeading.textContent = '🔴 Page Accessibility Alerts (Click Any Alert to Focus Element)';
+    alertsHeading.textContent = 'Page Accessibility Alerts — select an alert to focus its element';
 
     this.pageAlertsListEl = document.createElement('ul');
     this.pageAlertsListEl.className = 'alert-list page-alert-list';
     colAlerts.append(alertsHeading, this.pageAlertsListEl);
 
     grid.append(colInspect, colAlerts);
+    this.gridEl = grid;
     bar.appendChild(grid);
+
+    // Draggable edge so testers can shrink the inspector and see more of the page.
+    bar.appendChild(this.buildResizeHandle());
 
     // 3. On-Demand Fly-in Notes & All Saved Notes Drawer (#1, #2, #9)
     this.noteDrawerEl = this.buildFlyinNoteDrawer();
@@ -886,10 +1097,9 @@ export class AndiGen1Controller {
     this.inventoryDrawerEl = this.buildFlyinInventoryDrawer();
     bar.appendChild(this.inventoryDrawerEl);
 
-    // 5. Modals (#5 CSP Resolver, #3/#4/#6 Visual + Code Defect Report)
-    this.cspModalEl = this.buildCspModal();
+    // 5. Modal (#3/#4/#6 Visual + Code Defect Report)
     this.reportModalEl = this.buildReportModal();
-    bar.append(this.cspModalEl, this.reportModalEl);
+    bar.append(this.reportModalEl);
 
     shadow.appendChild(bar);
   }
@@ -908,7 +1118,7 @@ export class AndiGen1Controller {
     const topRow = document.createElement('div');
     topRow.className = 'flyin-header';
     const title = document.createElement('h3');
-    title.textContent = '📝 Tester Notes & DOM Node Screenshots';
+    title.textContent = 'Tester Notes & DOM Node Screenshots';
     const closeDrawerBtn = this.createButton('✕ Close', 'Close Notes Panel', () => {
       drawer.classList.remove('open');
     });
@@ -940,7 +1150,7 @@ export class AndiGen1Controller {
 
     // Primary Unified Action: Saves note AND captures the annotated DOM node screenshot so Defect Reports always have the screenshot!
     const saveWithShotBtn = this.createButton(
-      '📸 Save Note + Screenshot',
+      'Save Note + Screenshot',
       'Save note to localStorage and capture annotated DOM node screenshot with coordinates for the Defect Report',
       () => {
         this.saveActiveElementNote(true);
@@ -949,14 +1159,14 @@ export class AndiGen1Controller {
     saveWithShotBtn.classList.add('btn-primary');
 
     const saveTextOnlyBtn = this.createButton(
-      '💾 Save Text Only',
+      'Save Text Only',
       'Save note text to localStorage without updating screenshot',
       () => {
         this.saveActiveElementNote(false);
       }
     );
 
-    const clearBtn = this.createButton('🗑 Delete Note', 'Remove note & screenshot for this element', () => {
+    const clearBtn = this.createButton('Delete Note', 'Remove note & screenshot for this element', () => {
       this.clearActiveElementNote();
     });
     clearBtn.classList.add('btn-danger');
@@ -978,7 +1188,7 @@ export class AndiGen1Controller {
     this.screenshotPreviewImg.alt = 'Captured DOM node screenshot with tester note and coordinates';
 
     const downloadShotBtn = this.createButton(
-      '⬇ Download Node Screenshot (.png)',
+      'Download Screenshot (.png)',
       'Download annotated PNG screenshot for this DOM element',
       () => {
         const rec = this.records[this.activeIndex - 1];
@@ -1034,7 +1244,7 @@ export class AndiGen1Controller {
     const line1 = document.createElement('div');
     line1.innerHTML = `<strong>Active Element #${rec.index}:</strong> <code>&lt;${rec.tagName}&gt;</code> — <code>${rec.selector}</code>`;
     const line2 = document.createElement('div');
-    line2.textContent = `📍 Exact DOM Coords: ${rec.coordinates.formatted} | 🌐 ${env.browserName}`;
+    line2.textContent = `Exact DOM coords: ${rec.coordinates.formatted} | Browser: ${env.browserName}`;
     this.activeNoteMetaEl.append(line1, line2);
 
     if (rec.note) {
@@ -1052,7 +1262,7 @@ export class AndiGen1Controller {
     } else {
       this.noteTextarea.value = '';
       this.noteSeveritySelect.value = 'warning';
-      this.noteStatusEl.textContent = `No saved note yet for ${rec.selector}. Click "📸 Save Note + Screenshot" to record.`;
+      this.noteStatusEl.textContent = `No saved note yet for ${rec.selector}. Click "Save Note + Screenshot" to record.`;
       this.currentScreenshotDataUrl = '';
       this.screenshotWrapEl.style.display = 'none';
     }
@@ -1065,7 +1275,7 @@ export class AndiGen1Controller {
     this.allNotesListEl.textContent = '';
 
     const notedRecords = this.records.filter((r) => r.note !== null);
-    this.allNotesCountHeadingEl.textContent = `🗂 All Saved Notes on Page (${notedRecords.length})`;
+    this.allNotesCountHeadingEl.textContent = `All Saved Notes on Page (${notedRecords.length})`;
 
     if (notedRecords.length === 0) {
       const emptyLi = document.createElement('li');
@@ -1093,12 +1303,12 @@ export class AndiGen1Controller {
       const btnGroup = document.createElement('div');
       btnGroup.className = 'saved-note-actions';
 
-      const jumpBtn = this.createButton('🎯 Inspect Node', 'Jump to and highlight this DOM node', () => {
+      const jumpBtn = this.createButton('Inspect Node', 'Jump to and highlight this DOM node', () => {
         this.inspectByIndex(rec.index, true);
       });
       jumpBtn.classList.add('btn-primary');
 
-      const delBtn = this.createButton('🗑', 'Delete this note', () => {
+      const delBtn = this.createButton('Delete', 'Delete this note', () => {
         clearElementNote(rec.element, rec.selector, this.activeFrameLabel);
         rec.note = null;
         if (this.activeIndex === rec.index) {
@@ -1116,7 +1326,7 @@ export class AndiGen1Controller {
       const metaLine = document.createElement('div');
       metaLine.className = 'saved-note-meta';
       const coordsText = note.coordinates?.formatted || rec.coordinates.formatted;
-      metaLine.textContent = `📍 ${coordsText} · 🕒 ${new Date(note.updatedAt).toLocaleString()} · 🌐 ${note.browserInfo || getBrowserEnvironmentInfo().browserName}`;
+      metaLine.textContent = `${coordsText} · ${new Date(note.updatedAt).toLocaleString()} · ${note.browserInfo || getBrowserEnvironmentInfo().browserName}`;
 
       const bodyText = document.createElement('div');
       bodyText.className = 'saved-note-text';
@@ -1208,14 +1418,14 @@ export class AndiGen1Controller {
     ).length;
 
     if (this.reportTriggerBtn) {
-      this.reportTriggerBtn.textContent = `📋 Defect Report (${totalDefectReportItems})`;
+      this.reportTriggerBtn.textContent = `Defect Report (${totalDefectReportItems})`;
     }
 
     // The frame pill only has a function when stepped into an iframe (it tells the tester which document is being audited).
     // On the top document it carried no information, so it is not rendered.
     const pillFrame = document.createElement('span');
     pillFrame.className = 'pill pill-frame';
-    pillFrame.textContent = `🌐 ${this.activeFrameLabel}`;
+    pillFrame.textContent = `Frame: ${this.activeFrameLabel}`;
 
     const pillElements = document.createElement('span');
     pillElements.className = 'pill pill-info';
@@ -1229,7 +1439,7 @@ export class AndiGen1Controller {
     const pillNotesBtn = document.createElement('button');
     pillNotesBtn.type = 'button';
     pillNotesBtn.className = 'pill pill-note pill-actionable';
-    pillNotesBtn.textContent = `📝 Notes (${totalNotes})`;
+    pillNotesBtn.textContent = `Notes (${totalNotes})`;
     pillNotesBtn.title = 'Click to open the Notes Panel and view all saved notes on this page';
     pillNotesBtn.addEventListener('click', () => {
       this.inventoryDrawerEl?.classList.remove('open');
@@ -1240,7 +1450,7 @@ export class AndiGen1Controller {
     const pillInventoryBtn = document.createElement('button');
     pillInventoryBtn.type = 'button';
     pillInventoryBtn.className = 'pill pill-inventory pill-actionable';
-    pillInventoryBtn.textContent = `🗂 Inventory (${this.inventoryItems.length})`;
+    pillInventoryBtn.textContent = `Inventory (${this.inventoryItems.length})`;
     pillInventoryBtn.title = `Open the Element Inventory for the selected mode (${MODULE_LABELS[this.mode]}) — ${this.inventoryItems.length} element${this.inventoryItems.length === 1 ? '' : 's'}`;
     pillInventoryBtn.addEventListener('click', () => {
       this.openInventoryDrawer();
@@ -1266,7 +1476,7 @@ export class AndiGen1Controller {
 
         const link = document.createElement('a');
         link.href = `#andi-el-${rec.index}`;
-        link.textContent = `[#${rec.index} ${alert.module}ANDI] ${alert.message}${rec.note ? ' (📝 Note Attached)' : ''}`;
+        link.textContent = `[#${rec.index} ${alert.module}ANDI] ${alert.message}${rec.note ? ' (Note attached)' : ''}`;
         link.addEventListener('click', (e) => {
           e.preventDefault();
           this.inspectByIndex(rec.index, true);
@@ -1277,17 +1487,21 @@ export class AndiGen1Controller {
       }
     }
 
-    if (this.pageAlertsListEl.children.length === 0) {
-      const emptyLi = document.createElement('li');
-      emptyLi.className = 'empty-msg';
-      emptyLi.textContent = 'No page accessibility alerts detected in this mode.';
-      this.pageAlertsListEl.appendChild(emptyLi);
+    // The Page Accessibility Alerts panel is only shown when alerts exist, so a clean page
+    // leaves one full-width inspection panel instead of an empty second column.
+    const hasPageAlerts = this.pageAlertsListEl.children.length > 0;
+    if (this.pageAlertsPanelEl) {
+      this.pageAlertsPanelEl.style.display = hasPageAlerts ? '' : 'none';
     }
+    if (this.gridEl) {
+      this.gridEl.classList.toggle('single-panel', !hasPageAlerts);
+    }
+    this.syncTopDockOffset();
   }
 
   /**
    * Renders Panel 1's Active Element Navigator (with integrated Prev/Next buttons,
-   * element `#index`, tag/role, exact DOM coordinates, and contextual `📝 Note` button).
+   * element `#index`, tag/role, exact DOM coordinates, and contextual `Note` button).
    */
   private renderActiveElementInspection(rec: InspectedElementRecord): void {
     this.elementHeaderEl.textContent = '';
@@ -1311,7 +1525,7 @@ export class AndiGen1Controller {
 
     const coordsSpan = document.createElement('span');
     coordsSpan.className = 'el-coords';
-    coordsSpan.textContent = `📍 (${rec.coordinates.x}, ${rec.coordinates.y}) ${rec.coordinates.width}×${rec.coordinates.height}px`;
+    coordsSpan.textContent = `(${rec.coordinates.x}, ${rec.coordinates.y}) ${rec.coordinates.width}×${rec.coordinates.height}px`;
 
     // Show only the module(s) actually being run. In a single-module mode an element can still *qualify* for other
     // modules (e.g. a hidden element that also has text qualifies for both hANDI and cANDI) but those are not run, so listing
@@ -1321,7 +1535,7 @@ export class AndiGen1Controller {
     const shownModules =
       this.mode === 'all' ? rec.modulesMatched : rec.modulesMatched.filter((m) => m === this.mode);
     modulesSpan.textContent =
-      shownModules.length > 0 ? shownModules.map((m) => `${m}ANDI`).join(' · ') : '📝 note only';
+      shownModules.length > 0 ? shownModules.map((m) => `${m}ANDI`).join(' · ') : 'note only';
 
     navGroup.append(prevBtn, indexBadge, nextBtn, tagCode, coordsSpan, modulesSpan);
 
@@ -1330,7 +1544,7 @@ export class AndiGen1Controller {
 
     // Single contextual note button on the active element header (no duplicate toolbar button)
     const noteBadgeBtn = this.createButton(
-      rec.note ? '📝 Note ✓' : '📝 Note',
+      rec.note ? 'Note ✓' : 'Note',
       'Open Note & Screenshot Drawer for this element',
       () => {
         this.inventoryDrawerEl?.classList.remove('open');
@@ -1345,7 +1559,7 @@ export class AndiGen1Controller {
 
     if (rec.isIframe) {
       const stepInBtn = this.createButton(
-        rec.iframeAccessible ? '↪ Step Into Iframe' : '🔒 Cross-Origin Iframe',
+        rec.iframeAccessible ? '↪ Step Into Iframe' : 'Cross-origin Iframe',
         'Inspect DOM inside this iframe',
         () => {
           this.stepIntoIframe(rec.element as HTMLIFrameElement);
@@ -1359,14 +1573,14 @@ export class AndiGen1Controller {
 
     // Screen Reader Spoken Output
     this.srOutputEl.textContent =
-      rec.screenReaderOutput || '⚠ No Accessible Name / Silent Output';
+      rec.screenReaderOutput || 'No accessible name — silent output';
     this.srOutputEl.className = rec.accName ? 'sr-output' : 'sr-output sr-missing';
 
-    // Extracted DOM Node under Screen Reader Output: copy the full DOM code or a ready-to-run local test harness
+    // Extracted DOM code + copy action, shown after the element's ARIA / IDREF details
     this.srDomNodeBarEl.textContent = '';
     const domLabel = document.createElement('span');
     domLabel.className = 'sr-sub-label';
-    domLabel.textContent = '🧬 Extracted DOM Node:';
+    domLabel.textContent = 'Extracted Code';
 
     const domCode = document.createElement('code');
     domCode.className = 'sr-dom-code';
@@ -1382,7 +1596,7 @@ export class AndiGen1Controller {
     domStatus.setAttribute('aria-live', 'polite');
 
     const copyDomBtn = this.createButton(
-      '📋 Copy DOM Code',
+      'Copy DOM Code',
       'Copy the inspected element’s full HTML (ANDI markers removed) to the clipboard',
       () => {
         this.runDomAction(domStatus, 'DOM code copied', () => {
@@ -1390,142 +1604,11 @@ export class AndiGen1Controller {
         });
       }
     );
-    const copyHarnessBtn = this.createButton(
-      '🧪 Copy Test Harness',
-      'Copy a standalone HTML test file (element + context, IDREF targets, CSS, event handlers and dialogs) to the clipboard',
-      () => {
-        this.runDomAction(domStatus, 'Test harness copied', () => {
-          this.copyTextToClipboard(
-            buildTestHarnessHtml(rec, this.mode, MODULE_LABELS[this.mode], this.activeFrameLabel),
-            domStatus,
-            'Test harness HTML copied — save it as .html and open it locally'
-          );
-        });
-      }
-    );
-    const downloadHarnessBtn = this.createButton(
-      '⬇ Download Test Harness',
-      'Download the standalone HTML test harness file for local testing',
-      () => {
-        this.runDomAction(domStatus, 'Test harness downloaded', () => {
-          const html = buildTestHarnessHtml(rec, this.mode, MODULE_LABELS[this.mode], this.activeFrameLabel);
-          const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = getHarnessFileName(rec);
-          a.click();
-          URL.revokeObjectURL(url);
-          domStatus.textContent = `✓ Downloaded ${getHarnessFileName(rec)}`;
-        });
-      }
-    );
     copyDomBtn.classList.add('btn-primary');
-    domActions.append(copyDomBtn, copyHarnessBtn, downloadHarnessBtn, domStatus);
+    domActions.append(copyDomBtn, domStatus);
     this.srDomNodeBarEl.append(domLabel, domCode, domActions);
 
-    // Requirement #3 (Part B): IDREF Attributes (aria-labelledby, aria-describedby, headers, label[for]) & Clickable Linked Targets
-    this.srIdRefsBarEl.textContent = '';
-    if (rec.idRefGroups.length > 0) {
-      this.srIdRefsBarEl.style.display = 'flex';
-      for (const group of rec.idRefGroups) {
-        const groupRow = document.createElement('div');
-        groupRow.className = 'sr-idref-group';
-
-        const attrBadge = document.createElement('code');
-        attrBadge.className = 'sr-idref-attr';
-        attrBadge.textContent = `${group.attribute}="${group.rawValue}"`;
-        groupRow.appendChild(attrBadge);
-
-        for (const item of group.items) {
-          if (item.exists && item.targetElement) {
-            const targetEl = item.targetElement;
-            const linkBtn = document.createElement('a');
-            linkBtn.href = `#${item.id}`;
-            linkBtn.className = 'sr-idref-target-link';
-            const previewTxt =
-              item.text.length > 42 ? `${item.text.slice(0, 39)}...` : item.text || '(empty)';
-            linkBtn.textContent = `🔗 #${item.id} → <${item.targetTag}> "${previewTxt}"`;
-            linkBtn.title = `Click to navigate to referenced DOM node ${item.targetSelector} (<${item.targetTag} id="${item.id}">)`;
-            linkBtn.addEventListener('click', (e) => {
-              e.preventDefault();
-              this.navigateToDomElement(targetEl);
-            });
-            groupRow.appendChild(linkBtn);
-          } else {
-            const missingBadge = document.createElement('span');
-            missingBadge.className = 'sr-idref-missing';
-            missingBadge.textContent = `⚠️ #${item.id} (Missing ID Target)`;
-            groupRow.appendChild(missingBadge);
-          }
-        }
-        this.srIdRefsBarEl.appendChild(groupRow);
-      }
-    } else {
-      this.srIdRefsBarEl.style.display = 'none';
-    }
-
-    // Requirement #2: Semantic Table / Role Association Bar inside Screen Reader Output
-    this.srSemanticAssocBarEl.textContent = '';
-    if (rec.tableAssociation) {
-      this.srSemanticAssocBarEl.style.display = 'flex';
-      const ta = rec.tableAssociation;
-      const assocText = document.createElement('span');
-      assocText.className = 'sr-semantic-badge';
-      const parts: string[] = [
-        `📊 Semantic [${ta.tableRole}] Association:`
-      ];
-      if (ta.tableName) {
-        parts.push(`Table "${ta.tableName}"`);
-      }
-      if (ta.rowIndex !== null && ta.colIndex !== null) {
-        parts.push(`Cell (Row ${ta.rowIndex}/${ta.rowCount}, Col ${ta.colIndex}/${ta.colCount})`);
-      } else {
-        parts.push(`Grid Size (${ta.rowCount} rows × ${ta.colCount} cols)`);
-      }
-      if (ta.columnHeaders.length > 0) {
-        parts.push(`Col Header(s): "${ta.columnHeaders.join(' | ')}"`);
-      }
-      if (ta.rowHeaders.length > 0) {
-        parts.push(`Row Header(s): "${ta.rowHeaders.join(' | ')}"`);
-      }
-      assocText.textContent = parts.join(' • ');
-      this.srSemanticAssocBarEl.appendChild(assocText);
-    } else {
-      this.srSemanticAssocBarEl.style.display = 'none';
-    }
-
-    // Components table
-    this.componentsTbodyEl.textContent = '';
-    const entries = Object.entries(rec.components).filter(
-      ([, val]) => val !== undefined && val !== ''
-    );
-    for (const [key, val] of entries) {
-      const tr = document.createElement('tr');
-      const th = document.createElement('th');
-      th.textContent = key;
-      const td = document.createElement('td');
-      td.textContent = String(val);
-      tr.append(th, td);
-      this.componentsTbodyEl.appendChild(tr);
-    }
-    for (const [propKey, propVal] of Object.entries(rec.addOnProps)) {
-      const tr = document.createElement('tr');
-      const th = document.createElement('th');
-      th.textContent = propKey;
-      const td = document.createElement('td');
-      td.textContent = propVal;
-      tr.append(th, td);
-      this.componentsTbodyEl.appendChild(tr);
-    }
-    if (this.componentsTbodyEl.children.length === 0) {
-      const tr = document.createElement('tr');
-      const td = document.createElement('td');
-      td.colSpan = 2;
-      td.textContent = 'No accessibility markup found on this element.';
-      tr.appendChild(td);
-      this.componentsTbodyEl.appendChild(tr);
-    }
+    this.renderElementDetails(rec);
 
     // Active element alerts
     this.elementAlertsListEl.textContent = '';
@@ -1539,6 +1622,152 @@ export class AndiGen1Controller {
       txt.textContent = `[${alert.module}ANDI] ${alert.message}`;
       li.append(ball, txt);
       this.elementAlertsListEl.appendChild(li);
+    }
+  }
+
+  /**
+   * Renders every detail ANDI knows about the inspected element as ONE deduplicated table.
+   *
+   * Previously the same facts were split across three blocks that overlapped heavily: an IDREF
+   * bar and a semantic-association bar above the extracted code, plus a components table below
+   * it. An element with `aria-labelledby` was therefore listed twice, in two different formats
+   * and two different naming conventions (`ariaLabelledby` vs `aria-labelledby`). Here each
+   * attribute appears exactly once, in source-attribute order, and any attribute that resolves
+   * IDREFs shows its raw value together with clickable links to the referenced nodes.
+   */
+  private renderElementDetails(rec: InspectedElementRecord): void {
+    this.detailsTbodyEl.textContent = '';
+
+    const idRefByAttr = new Map<string, IdRefResolutionGroup>();
+    for (const group of rec.idRefGroups) {
+      idRefByAttr.set(group.attribute, group);
+    }
+    const renderedIdRefAttrs = new Set<string>();
+    const comps = rec.components as Record<string, string | undefined>;
+
+    // Ordered so the accessible-name sources come first, then description, then associations.
+    // `idRefAttr` marks the component whose value is already covered by an IDREF group, so the
+    // two are merged into a single row instead of being printed twice.
+    const detailRows: Array<{ key: string; label: string; idRefAttr?: string }> = [
+      { key: 'ariaLabel', label: 'aria-label' },
+      { key: 'ariaLabelledby', label: 'aria-labelledby', idRefAttr: 'aria-labelledby' },
+      { key: 'nativeLabel', label: 'label', idRefAttr: 'label[for]' },
+      { key: 'alt', label: 'alt' },
+      { key: 'caption', label: 'caption' },
+      { key: 'legend', label: 'legend' },
+      { key: 'figcaption', label: 'figcaption' },
+      { key: 'value', label: 'value' },
+      { key: 'placeholder', label: 'placeholder' },
+      { key: 'title', label: 'title' },
+      { key: 'pseudoBefore', label: '::before' },
+      { key: 'innerText', label: 'text' },
+      { key: 'pseudoAfter', label: '::after' },
+      { key: 'subtreeSummary', label: 'subtree' },
+      { key: 'ariaDescribedby', label: 'aria-describedby', idRefAttr: 'aria-describedby' },
+      { key: 'ariaDescription', label: 'aria-description' },
+      { key: 'tableContext', label: 'table context' },
+      { key: 'tableColumnHeaders', label: 'column header(s)' },
+      { key: 'tableRowHeaders', label: 'row header(s)' }
+    ];
+
+    for (const row of detailRows) {
+      const value = comps[row.key];
+      const idRefAttr = row.idRefAttr;
+      const group = idRefAttr ? idRefByAttr.get(idRefAttr) : undefined;
+      if ((value === undefined || value === '') && !group) {
+        continue;
+      }
+      let label = row.label;
+      // Keeps the role that the old semantic bar reported (table / grid / treegrid).
+      if (row.key === 'tableContext' && rec.tableAssociation) {
+        label = `${rec.tableAssociation.tableRole} context`;
+      }
+      if (group && idRefAttr) {
+        renderedIdRefAttrs.add(idRefAttr);
+        this.appendIdRefDetailRow(label, group, value);
+      } else {
+        this.appendDetailRow(label, value || '');
+      }
+    }
+
+    // Remaining IDREF attributes that have no component counterpart (headers, aria-controls,
+    // aria-owns, aria-activedescendant, ...).
+    for (const group of rec.idRefGroups) {
+      if (!renderedIdRefAttrs.has(group.attribute)) {
+        this.appendIdRefDetailRow(group.attribute, group);
+      }
+    }
+
+    // Computed/measured properties (contrast, aria-expanded, ...).
+    for (const [propKey, propVal] of Object.entries(rec.addOnProps)) {
+      this.appendDetailRow(propKey, propVal);
+    }
+
+    if (this.detailsTbodyEl.children.length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 2;
+      td.textContent = 'No accessibility markup found on this element.';
+      tr.appendChild(td);
+      this.detailsTbodyEl.appendChild(tr);
+    }
+  }
+
+  private appendDetailRow(label: string, value: string): HTMLElement {
+    const tr = document.createElement('tr');
+    const th = document.createElement('th');
+    th.scope = 'row';
+    th.textContent = label;
+    const td = document.createElement('td');
+    td.textContent = value;
+    tr.append(th, td);
+    this.detailsTbodyEl.appendChild(tr);
+    return td;
+  }
+
+  /**
+   * One row for an IDREF attribute: the literal attribute value plus a clickable link per
+   * referenced node, so the raw markup and what it actually resolves to stay together.
+   */
+  private appendIdRefDetailRow(
+    label: string,
+    group: IdRefResolutionGroup,
+    resolvedValue?: string
+  ): void {
+    const td = this.appendDetailRow(label, '');
+
+    const rawBadge = document.createElement('code');
+    rawBadge.className = 'detail-raw';
+    rawBadge.textContent = `="${group.rawValue}"`;
+    td.appendChild(rawBadge);
+
+    if (resolvedValue && resolvedValue !== '"" (empty/unresolved)') {
+      const resolvedText = document.createElement('span');
+      resolvedText.className = 'detail-resolved';
+      resolvedText.textContent = resolvedValue;
+      td.appendChild(resolvedText);
+    }
+
+    for (const item of group.items) {
+      if (item.exists && item.targetElement) {
+        const targetEl = item.targetElement;
+        const link = document.createElement('a');
+        link.href = `#${item.id}`;
+        link.className = 'sr-idref-target-link';
+        const preview = item.text.length > 42 ? `${item.text.slice(0, 39)}...` : item.text || '(empty)';
+        link.textContent = `#${item.id} → <${item.targetTag}> "${preview}"`;
+        link.title = `Click to navigate to referenced DOM node ${item.targetSelector} (<${item.targetTag} id="${item.id}">)`;
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          this.navigateToDomElement(targetEl);
+        });
+        td.appendChild(link);
+      } else {
+        const missing = document.createElement('span');
+        missing.className = 'sr-idref-missing';
+        missing.textContent = `#${item.id} — missing ID target`;
+        td.appendChild(missing);
+      }
     }
   }
 
@@ -1577,7 +1806,7 @@ export class AndiGen1Controller {
       ta.remove();
       statusEl.textContent = ok
         ? `✓ ${okMessage}`
-        : '⚠ Clipboard blocked by the browser — use Download Test Harness instead';
+        : 'Clipboard blocked by the browser — copy the code manually';
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(done, fallback);
@@ -1590,11 +1819,7 @@ export class AndiGen1Controller {
     this.elementHeaderEl.textContent = 'No inspectable elements found for this mode.';
     this.srOutputEl.textContent = '—';
     this.srDomNodeBarEl.textContent = '';
-    this.srIdRefsBarEl.textContent = '';
-    this.srIdRefsBarEl.style.display = 'none';
-    this.srSemanticAssocBarEl.textContent = '';
-    this.srSemanticAssocBarEl.style.display = 'none';
-    this.componentsTbodyEl.textContent = '';
+    this.detailsTbodyEl.textContent = '';
     this.elementAlertsListEl.textContent = '';
   }
 
@@ -1612,14 +1837,14 @@ export class AndiGen1Controller {
     const topRow = document.createElement('div');
     topRow.className = 'flyin-header';
     const title = document.createElement('h3');
-    title.textContent = '🗂 Element Inventory';
+    title.textContent = 'Element Inventory';
     this.inventoryTitleEl = title;
 
     const topActions = document.createElement('div');
     topActions.className = 'saved-note-actions';
 
     const copyInvBtn = this.createButton(
-      '📋 Copy Inventory JSON',
+      'Copy Inventory JSON',
       'Copy the current filtered Element Inventory Array as JSON to clipboard',
       () => {
         const exportArray = this.getFilteredInventoryItems().map((it) => ({
@@ -1640,7 +1865,7 @@ export class AndiGen1Controller {
         navigator.clipboard?.writeText(JSON.stringify(exportArray, null, 2));
         copyInvBtn.textContent = '✓ Copied Array!';
         setTimeout(() => {
-          copyInvBtn.textContent = '📋 Copy Inventory JSON';
+          copyInvBtn.textContent = 'Copy Inventory JSON';
         }, 1500);
       }
     );
@@ -1719,22 +1944,22 @@ export class AndiGen1Controller {
       return;
     }
 
-    const categoryMeta: Array<{ key: InventoryCategory | 'all'; label: string; icon: string }> = [
-      { key: 'all', label: 'All', icon: '🗂' },
-      { key: 'tables', label: 'Tables', icon: '📊' },
-      { key: 'links', label: 'Links', icon: '🔗' },
-      { key: 'buttons', label: 'Buttons', icon: '🔘' },
-      { key: 'formControls', label: 'Form Controls', icon: '⌨️' },
-      { key: 'landmarks', label: 'Landmarks', icon: '🧭' },
-      { key: 'headings', label: 'Headings', icon: '📑' },
-      { key: 'graphics', label: 'Graphics', icon: '🖼' },
-      { key: 'dialogsLive', label: 'Dialogs/Live', icon: '💬' },
-      { key: 'iframes', label: 'Iframes', icon: '🪟' },
-      { key: 'other', label: 'Other', icon: '▫️' }
+    const categoryMeta: Array<{ key: InventoryCategory | 'all'; label: string }> = [
+      { key: 'all', label: 'All' },
+      { key: 'tables', label: 'Tables' },
+      { key: 'links', label: 'Links' },
+      { key: 'buttons', label: 'Buttons' },
+      { key: 'formControls', label: 'Form Controls' },
+      { key: 'landmarks', label: 'Landmarks' },
+      { key: 'headings', label: 'Headings' },
+      { key: 'graphics', label: 'Graphics' },
+      { key: 'dialogsLive', label: 'Dialogs/Live' },
+      { key: 'iframes', label: 'Iframes' },
+      { key: 'other', label: 'Other' }
     ];
 
     if (this.inventoryTitleEl) {
-      this.inventoryTitleEl.textContent = `🗂 Element Inventory — ${MODULE_LABELS[this.mode]}`;
+      this.inventoryTitleEl.textContent = `Element Inventory — ${MODULE_LABELS[this.mode]}`;
     }
 
     // Only show categories that contain elements for the selected mode; fall back to "All" if the active one emptied out.
@@ -1754,7 +1979,7 @@ export class AndiGen1Controller {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = `inv-cat-btn ${this.activeInventoryCategory === cat.key ? 'active' : ''}`;
-      btn.textContent = `${cat.icon} ${cat.label} (${count})`;
+      btn.textContent = `${cat.label} (${count})`;
       btn.addEventListener('click', () => {
         this.activeInventoryCategory = cat.key;
         this.renderInventoryDrawer();
@@ -1802,7 +2027,7 @@ export class AndiGen1Controller {
       }
 
       const jumpBtn = this.createButton(
-        item.inspectedIndex ? `🎯 Navigate (#${item.inspectedIndex})` : '🎯 Navigate to Node',
+        item.inspectedIndex ? `Navigate (#${item.inspectedIndex})` : 'Navigate to Node',
         `Scroll to, focus, and highlight ${item.selector}`,
         () => {
           this.navigateToDomElement(item.element);
@@ -1814,11 +2039,11 @@ export class AndiGen1Controller {
 
       const nameRow = document.createElement('div');
       nameRow.className = 'saved-note-text';
-      nameRow.textContent = `🔊 Accessible Name: "${item.accName || '(No Accessible Name)'}"${item.accDesc ? ` | Desc: "${item.accDesc}"` : ''}`;
+      nameRow.textContent = `Accessible name: "${item.accName || '(No Accessible Name)'}"${item.accDesc ? ` | Desc: "${item.accDesc}"` : ''}`;
 
       const detailsRow = document.createElement('div');
       detailsRow.className = 'saved-note-meta';
-      detailsRow.textContent = `${item.details} · 📍 ${item.coordinates.formatted}`;
+      detailsRow.textContent = `${item.details} · ${item.coordinates.formatted}`;
 
       const domRow = document.createElement('div');
       domRow.className = 'inv-dom-row';
@@ -1828,7 +2053,7 @@ export class AndiGen1Controller {
       const copyStatus = document.createElement('span');
       copyStatus.className = 'sr-dom-status';
       copyStatus.setAttribute('role', 'status');
-      const copyBtn = this.createButton('📋 Copy DOM', `Copy the full HTML of ${item.selector}`, () => {
+      const copyBtn = this.createButton('Copy DOM', `Copy the full HTML of ${item.selector}`, () => {
         this.runDomAction(copyStatus, 'Copy', () => {
           this.copyTextToClipboard(getCleanDomCode(item.element), copyStatus, 'Copied');
         });
@@ -1838,102 +2063,6 @@ export class AndiGen1Controller {
       li.append(headerRow, nameRow, detailsRow, domRow);
       this.inventoryListEl.appendChild(li);
     });
-  }
-
-  private buildCspModal(): HTMLElement {
-    const modal = document.createElement('div');
-    modal.className = 'report-modal';
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
-    modal.setAttribute('aria-label', 'Content Security Policy Detector and Resolver');
-
-    const card = document.createElement('div');
-    card.className = 'report-card';
-
-    const topRow = document.createElement('div');
-    topRow.className = 'report-header';
-    const title = document.createElement('h2');
-    title.textContent = '🛡️ Built-in CSP Detection & Resolution';
-
-    const controls = document.createElement('div');
-    controls.className = 'report-controls';
-
-    const resolveBtn = this.createButton(
-      '⚡ Neutralize Meta CSP Rules',
-      'Neutralize restrictive <meta http-equiv="Content-Security-Policy"> tags on this page',
-      () => {
-        const count = this.cspGuard.resolveMetaCsp(this.activeDocument);
-        this.refreshCspModal();
-        resolveBtn.textContent = `✓ Resolved (${count} Meta CSP tag${count === 1 ? '' : 's'})`;
-      }
-    );
-    resolveBtn.classList.add('btn-primary');
-
-    const restoreBtn = this.createButton(
-      'Restore Original Meta CSP',
-      'Restore original meta CSP tags',
-      () => {
-        this.cspGuard.restoreMetaCsp(this.activeDocument);
-        this.refreshCspModal();
-      }
-    );
-
-    const closeBtn = this.createButton('✕ Close', 'Close CSP modal', () => {
-      modal.classList.remove('open');
-    });
-
-    controls.append(resolveBtn, restoreBtn, closeBtn);
-    topRow.append(title, controls);
-
-    this.cspBodyEl = document.createElement('div');
-    this.cspBodyEl.className = 'csp-body';
-
-    card.append(topRow, this.cspBodyEl);
-    modal.appendChild(card);
-    return modal;
-  }
-
-  private openCspModal(): void {
-    this.refreshCspModal();
-    this.cspModalEl.classList.add('open');
-  }
-
-  private refreshCspModal(): void {
-    const state = this.cspGuard.getReport(this.activeDocument);
-    this.cspBodyEl.textContent = '';
-
-    const items = [
-      `Constructable Stylesheets (Shadow DOM style-src bypass): ${state.adoptedStyleSheetsActive ? 'ACTIVE ✓' : 'Fallback <style>'}`,
-      `Detected <meta http-equiv="Content-Security-Policy"> tags: ${state.metaTagCount}`,
-      `Meta CSP Resolution Status: ${state.metaResolved ? 'NEUTRALIZED (Unrestricted local inspection)' : 'Original Page Policy Active'}`,
-      `Recorded Runtime CSP Violations: ${state.violations.length}`
-    ];
-
-    const ul = document.createElement('ul');
-    for (const line of items) {
-      const li = document.createElement('li');
-      li.textContent = line;
-      ul.appendChild(li);
-    }
-    this.cspBodyEl.appendChild(ul);
-
-    if (state.metaPolicies.length > 0) {
-      const p = document.createElement('p');
-      p.textContent = `Detected Policy Directives: ${state.metaPolicies.join(' | ')}`;
-      this.cspBodyEl.appendChild(p);
-    }
-
-    if (state.violations.length > 0) {
-      const vHeader = document.createElement('h3');
-      vHeader.textContent = 'Blocked CSP Directives Detected:';
-      const vList = document.createElement('ul');
-      for (const v of state.violations) {
-        const li = document.createElement('li');
-        li.textContent = `[${v.timestamp}] Directive "${v.violatedDirective}" blocked URI: ${v.blockedURI}`;
-        vList.appendChild(li);
-      }
-      this.cspBodyEl.append(vHeader, vList);
-    }
   }
 
   /**
@@ -1955,7 +2084,7 @@ export class AndiGen1Controller {
 
     const title = document.createElement('h2');
     title.textContent =
-      '📋 Defect Report (ANDI Alerts + Tester Notes, Coordinates & Screenshots)';
+      'Defect Report (ANDI Alerts + Tester Notes, Coordinates & Screenshots)';
 
     const controls = document.createElement('div');
     controls.className = 'report-controls';
@@ -1985,7 +2114,7 @@ export class AndiGen1Controller {
     copyBtn.classList.add('btn-primary');
 
     const downloadBtn = this.createButton(
-      '⬇ Download Report + Screenshots',
+      'Download Report + Screenshots',
       'Download Defect Report and captured DOM node PNG screenshots',
       () => {
         this.downloadReportAndScreenshots();
@@ -2107,20 +2236,20 @@ export class AndiGen1Controller {
 
       const coordsBadge = document.createElement('span');
       coordsBadge.className = 'pill pill-info';
-      coordsBadge.textContent = `📍 DOM Coords: ${item.coordinates.formatted}`;
+      coordsBadge.textContent = `DOM coords: ${item.coordinates.formatted}`;
 
       cardHeader.append(h3, coordsBadge);
 
       const srLine = document.createElement('div');
       srLine.className = 'visual-defect-sr';
-      srLine.textContent = `🔊 Screen Reader Output: "${item.screenReaderOutput}" | Accessible Name: "${item.accessibleName}"`;
+      srLine.textContent = `Screen reader output: "${item.screenReaderOutput}" | Accessible Name: "${item.accessibleName}"`;
 
       card.append(cardHeader, srLine);
 
       if (item.alerts.length > 0) {
         const alertTitle = document.createElement('div');
         alertTitle.className = 'visual-subhead';
-        alertTitle.textContent = `🔴 ANDI Detected Alerts (${item.alerts.length}):`;
+        alertTitle.textContent = `ANDI detected alerts (${item.alerts.length}):`;
         const ul = document.createElement('ul');
         ul.className = 'alert-list';
         for (const a of item.alerts) {
@@ -2146,7 +2275,7 @@ export class AndiGen1Controller {
         const noteTime = new Date(item.note.updatedAt).toLocaleString();
         const noteCoords = item.note.coordinates?.formatted || item.coordinates.formatted;
         const noteBrowser = item.note.browserInfo || env.browserName;
-        noteHead.textContent = `📝 Tester Note [${item.note.severity.toUpperCase()}] · Coords: ${noteCoords} · Browser: ${noteBrowser} · Time: ${noteTime}`;
+        noteHead.textContent = `Tester note [${item.note.severity.toUpperCase()}] · Coords: ${noteCoords} · Browser: ${noteBrowser} · Time: ${noteTime}`;
 
         const noteP = document.createElement('p');
         noteP.className = 'visual-note-text';
@@ -2159,7 +2288,7 @@ export class AndiGen1Controller {
           shotWrap.className = 'visual-shot-wrap';
           const shotLabel = document.createElement('div');
           shotLabel.className = 'visual-shot-label';
-          shotLabel.textContent = '📸 Captured DOM Node Screenshot with Tester Note:';
+          shotLabel.textContent = 'Captured DOM node screenshot with tester note:';
           const img = document.createElement('img');
           img.src = item.note.screenshotDataUrl;
           img.alt = `Annotated DOM node screenshot for #${item.index} ${item.selector}`;
@@ -2217,9 +2346,9 @@ export class AndiGen1Controller {
   }
 
   /**
-   * Requirement #5: High-Contrast WCAG AAA Color Palettes for both Dark and Light Themes.
-   * - Dark Theme: #ffffff & #e2e8f0 text on #020617 / #0f172a backgrounds (14.6:1 to 19.3:1 contrast)
+   * Requirement #5: High-Contrast WCAG AAA Color Palettes for both Light (default) and Dark Themes.
    * - Light Theme: #020617 & #1e293b text on #ffffff / #f8fafc backgrounds (14.2:1 to 20.1:1 contrast)
+   * - Dark Theme: #ffffff & #e2e8f0 text on #020617 / #0f172a backgrounds (14.6:1 to 19.3:1 contrast)
    */
   private getShadowStyles(): string {
     return `
@@ -2229,7 +2358,7 @@ export class AndiGen1Controller {
       }
       * { box-sizing: border-box; }
 
-      /* High-Contrast Dark Theme (Default — WCAG AAA 14:1+ text contrast) */
+      /* High-Contrast Dark Theme (WCAG AAA 14:1+ text contrast) */
       .andi-bar {
         --bg-main: #020617;
         --bg-panel: #0f172a;
@@ -2245,11 +2374,70 @@ export class AndiGen1Controller {
         color: var(--text-main);
         border-bottom: 3px solid var(--accent);
         box-shadow: 0 10px 32px rgba(0, 0, 0, 0.65);
-        font-size: 13px;
+        font-size: 14.5px;
+        line-height: 1.5;
         position: relative;
       }
 
-      /* High-Contrast Light Theme (WCAG AAA 14:1+ text contrast) */
+      /* Draggable / keyboard-operable resize edge (shrink the inspector to reveal more page) */
+      .andi-resizer {
+        position: absolute;
+        background: transparent;
+        z-index: 5;
+        touch-action: none;
+      }
+      .andi-resizer::after {
+        content: '';
+        position: absolute;
+        background: var(--border-color);
+        border-radius: 999px;
+        opacity: 0.55;
+      }
+      .andi-bar[data-dock="top"] .andi-resizer {
+        left: 0;
+        right: 0;
+        bottom: -3px;
+        height: 11px;
+        cursor: ns-resize;
+      }
+      .andi-bar[data-dock="top"] .andi-resizer::after {
+        left: 50%;
+        transform: translateX(-50%);
+        top: 4px;
+        width: 64px;
+        height: 4px;
+      }
+      .andi-bar[data-dock="left"] .andi-resizer,
+      .andi-bar[data-dock="right"] .andi-resizer {
+        top: 0;
+        bottom: 0;
+        width: 11px;
+        cursor: ew-resize;
+      }
+      .andi-bar[data-dock="left"] .andi-resizer {
+        right: -3px;
+      }
+      .andi-bar[data-dock="right"] .andi-resizer {
+        left: -3px;
+      }
+      .andi-bar[data-dock="left"] .andi-resizer::after,
+      .andi-bar[data-dock="right"] .andi-resizer::after {
+        top: 50%;
+        transform: translateY(-50%);
+        left: 4px;
+        width: 4px;
+        height: 64px;
+      }
+      .andi-resizer:hover::after, .andi-resizer.dragging::after {
+        opacity: 1;
+        background: var(--accent);
+      }
+      .andi-resizer:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: -1px;
+      }
+
+      /* High-Contrast Light Theme (Default — WCAG AAA 14:1+ text contrast) */
       .andi-bar[data-theme="light"] {
         --bg-main: #e2e8f0;
         --bg-panel: #ffffff;
@@ -2264,7 +2452,7 @@ export class AndiGen1Controller {
         box-shadow: 0 8px 28px rgba(2, 6, 23, 0.22);
       }
 
-      /* Dock Layouts (#7: Left / Right / Top / Bottom / DOM Explorer) */
+      /* Dock Layouts (#7: Top / Left / Right) */
       .andi-bar[data-dock="left"],
       .andi-bar[data-dock="right"] {
         height: 100vh;
@@ -2282,11 +2470,6 @@ export class AndiGen1Controller {
       .andi-bar[data-dock="left"] .andi-panel,
       .andi-bar[data-dock="right"] .andi-panel {
         max-height: 43vh;
-      }
-      .andi-bar[data-dock="dom"] {
-        border: 2.5px solid var(--accent);
-        border-radius: 10px;
-        overflow: hidden;
       }
 
       /* 3-Zone Ergonomic Top Command Bar */
@@ -2318,16 +2501,16 @@ export class AndiGen1Controller {
       }
       .andi-logo {
         font-weight: 900;
-        font-size: 14.5px;
+        font-size: 16px;
         color: var(--accent);
       }
       .andi-version {
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 700;
         background: var(--btn-bg);
         color: var(--text-main);
         border: 1px solid var(--border-color);
-        padding: 1px 6px;
+        padding: 2px 7px;
         border-radius: 4px;
       }
       .andi-module-wrap, .andi-iframe-wrap {
@@ -2341,8 +2524,8 @@ export class AndiGen1Controller {
         color: var(--text-main);
         border: 1.5px solid var(--border-color);
         border-radius: 6px;
-        padding: 4px 8px;
-        font-size: 12px;
+        padding: 5px 9px;
+        font-size: 13.5px;
         font-weight: 700;
       }
       select:disabled {
@@ -2355,9 +2538,9 @@ export class AndiGen1Controller {
         align-items: center;
       }
       .pill {
-        padding: 3px 9px;
+        padding: 4px 11px;
         border-radius: 999px;
-        font-size: 11.5px;
+        font-size: 13px;
         font-weight: 800;
         border: 1.5px solid transparent;
       }
@@ -2382,8 +2565,8 @@ export class AndiGen1Controller {
         color: var(--btn-text);
         border: 1.5px solid var(--border-color);
         border-radius: 6px;
-        padding: 4px 10px;
-        font-size: 12px;
+        padding: 5px 12px;
+        font-size: 13.5px;
         font-weight: 700;
         cursor: pointer;
       }
@@ -2402,19 +2585,23 @@ export class AndiGen1Controller {
         grid-template-columns: 1.3fr 1fr;
         gap: 10px;
         padding: 8px 12px;
-        max-height: 205px;
+        max-height: 240px;
+      }
+      /* One full-width inspection panel when the page has no accessibility alerts */
+      .andi-grid.single-panel {
+        grid-template-columns: 1fr;
       }
       .andi-panel {
         background: var(--bg-panel);
         border: 1.5px solid var(--border-color);
         border-radius: 8px;
-        padding: 8px 10px;
+        padding: 9px 11px;
         overflow-y: auto;
-        max-height: 188px;
+        max-height: 222px;
       }
       .panel-title {
         margin: 0 0 6px;
-        font-size: 13px;
+        font-size: 14.5px;
         font-weight: 800;
         color: var(--text-main);
       }
@@ -2441,26 +2628,26 @@ export class AndiGen1Controller {
         color: #ffffff;
         border: 1px solid #f9a8d4;
         font-weight: 800;
-        font-size: 11.5px;
-        padding: 2px 7px;
+        font-size: 13px;
+        padding: 3px 9px;
         border-radius: 4px;
       }
       .el-tag {
         color: var(--accent);
         font-weight: 800;
-        font-size: 12.5px;
+        font-size: 14px;
       }
       .el-coords {
-        font-size: 11px;
+        font-size: 12.5px;
         font-weight: 700;
         color: var(--text-muted);
         background: var(--bg-sub);
         border: 1px solid var(--border-color);
-        padding: 1px 6px;
+        padding: 2px 7px;
         border-radius: 4px;
       }
       .el-modules {
-        font-size: 11px;
+        font-size: 12.5px;
         font-weight: 700;
         color: var(--text-muted);
       }
@@ -2469,48 +2656,51 @@ export class AndiGen1Controller {
         background: var(--bg-sub);
         border: 1px solid var(--border-color);
         border-left: 4px solid var(--accent);
-        padding: 5px 8px;
+        padding: 7px 10px;
         border-radius: 4px;
         margin-bottom: 6px;
       }
       .sr-title {
-        font-size: 10.5px;
+        font-size: 12px;
         font-weight: 800;
         color: var(--text-muted);
+        letter-spacing: 0.03em;
         text-transform: uppercase;
       }
       .sr-output {
         font-weight: 800;
-        font-size: 13px;
-        margin-top: 2px;
+        font-size: 15px;
+        margin-top: 3px;
         color: var(--text-main);
       }
       .sr-missing { color: var(--sr-missing-color); }
 
-      /* Requirement #1: Extracted DOM Node Bar under Screen Reader Output */
+      /* Requirement #1: Extracted Code Bar — rendered after the ARIA / IDREF detail bars */
       .sr-dom-node-bar {
         display: flex;
         align-items: center;
         flex-wrap: wrap;
         gap: 6px;
-        margin-top: 5px;
-        padding-top: 5px;
+        margin-top: 6px;
+        padding-top: 6px;
         border-top: 1px dashed var(--border-color);
       }
       .sr-sub-label {
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 800;
         color: var(--text-muted);
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
       }
       .sr-dom-code {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11.5px;
-        font-weight: 700;
+        font-size: 13px;
+        font-weight: 600;
         color: var(--text-main);
         background: var(--bg-panel);
         border: 1.5px solid var(--border-color);
         border-radius: 5px;
-        padding: 3px 8px;
+        padding: 4px 9px;
         max-width: 100%;
         overflow-wrap: anywhere;
       }
@@ -2522,7 +2712,7 @@ export class AndiGen1Controller {
         width: 100%;
       }
       .sr-dom-status {
-        font-size: 11px;
+        font-size: 12.5px;
         font-weight: 800;
         color: var(--accent);
       }
@@ -2534,39 +2724,17 @@ export class AndiGen1Controller {
         margin-top: 4px;
       }
 
-      /* Requirement #3 (Part B): IDREF Attributes & Linked Items in Screen Reader Output */
-      .sr-idrefs-bar {
-        display: none;
-        flex-direction: column;
-        gap: 4px;
-        margin-top: 5px;
-        padding-top: 5px;
-        border-top: 1px dashed var(--border-color);
-      }
-      .sr-idref-group {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 6px;
-      }
-      .sr-idref-attr {
-        background: #312e81;
-        color: #ffffff;
-        border: 1px solid #a5b4fc;
-        border-radius: 4px;
-        padding: 2px 6px;
-        font-size: 11px;
-        font-weight: 800;
-      }
+      /* IDREF target links inside the merged Element Details table */
       .sr-idref-target-link {
-        display: inline-flex;
+        display: inline-block;
+        margin: 2px 6px 2px 0;
         align-items: center;
         background: #0c4a6e;
         color: #ffffff;
         border: 1px solid #7dd3fc;
         border-radius: 4px;
-        padding: 2px 7px;
-        font-size: 11px;
+        padding: 3px 9px;
+        font-size: 12.5px;
         font-weight: 700;
         text-decoration: underline;
         cursor: pointer;
@@ -2576,36 +2744,18 @@ export class AndiGen1Controller {
         background: #0369a1;
       }
       .sr-idref-missing {
-        display: inline-flex;
+        display: inline-block;
+        margin: 2px 6px 2px 0;
         align-items: center;
         background: #7f1d1d;
         color: #ffffff;
         border: 1px solid #fca5a5;
         border-radius: 4px;
-        padding: 2px 7px;
-        font-size: 11px;
+        padding: 3px 9px;
+        font-size: 12.5px;
         font-weight: 800;
       }
 
-      /* Requirement #2: Semantic Table / Role Association Bar */
-      .sr-semantic-bar {
-        display: none;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin-top: 5px;
-        padding-top: 5px;
-        border-top: 1px dashed var(--border-color);
-      }
-      .sr-semantic-badge {
-        background: #064e3b;
-        color: #ffffff;
-        border: 1px solid #6ee7b7;
-        border-radius: 4px;
-        padding: 2px 7px;
-        font-size: 11px;
-        font-weight: 800;
-      }
 
       /* Requirement #3 (Part A): Element Inventory Fly-In Drawer */
       .flyin-inventory-drawer {
@@ -2659,18 +2809,36 @@ export class AndiGen1Controller {
       .comp-table {
         width: 100%;
         border-collapse: collapse;
-        font-size: 12px;
+        font-size: 13.5px;
         margin-bottom: 5px;
       }
       .comp-table th, .comp-table td {
         border-bottom: 1px solid var(--border-color);
-        padding: 3px 5px;
+        padding: 4px 6px;
         text-align: left;
+        vertical-align: top;
       }
       .comp-table th {
         color: var(--accent);
         font-weight: 800;
         width: 30%;
+        font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+        white-space: nowrap;
+      }
+      /* Merged detail rows: literal attribute value, resolved text, then IDREF target links.
+         Inline-block keeps the table's two-column alignment intact while letting the
+         badges and links wrap inside the value cell. */
+      .detail-raw {
+        display: inline-block;
+        font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+        font-size: 12.5px;
+        color: var(--text-dim);
+        margin-right: 6px;
+      }
+      .detail-resolved {
+        display: inline-block;
+        font-weight: 700;
+        margin-right: 6px;
       }
 
       /* Fly-in Notes & All Saved Notes Drawer */
@@ -2818,9 +2986,9 @@ export class AndiGen1Controller {
       .alert-item {
         display: flex;
         align-items: flex-start;
-        gap: 6px;
-        padding: 4px 0;
-        font-size: 12px;
+        gap: 7px;
+        padding: 5px 0;
+        font-size: 13.5px;
         font-weight: 600;
         border-bottom: 1px solid var(--border-color);
       }
@@ -2833,19 +3001,19 @@ export class AndiGen1Controller {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 18px;
-        height: 18px;
-        min-width: 18px;
+        width: 20px;
+        height: 20px;
+        min-width: 20px;
         border-radius: 50%;
-        font-size: 11px;
+        font-size: 12.5px;
         font-weight: 900;
       }
       .ball-danger { background: #991b1b; color: #ffffff; border: 1px solid #fca5a5; }
       .ball-warning { background: #fef08a; color: #020617; border: 1px solid #ca8a04; }
       .ball-caution { background: #075985; color: #ffffff; border: 1px solid #7dd3fc; }
-      .empty-msg { color: var(--text-muted); font-style: italic; font-size: 12px; }
+      .empty-msg { color: var(--text-muted); font-style: italic; font-size: 13px; }
 
-      /* Report & CSP Modals */
+      /* Report Modal */
       .report-modal {
         display: none;
         position: fixed;
@@ -2977,11 +3145,7 @@ export class AndiGen1Controller {
         border-radius: 8px;
         padding: 12px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
-      }
-      .csp-body {
-        font-size: 13px;
-        line-height: 1.6;
+        font-size: 12.5px;
       }
     `;
   }
