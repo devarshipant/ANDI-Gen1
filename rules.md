@@ -35,8 +35,8 @@ This document catalogs the architectural enhancements, feature updates, usabilit
   - **Embedded Annotated PNG Screenshots (`<img>`)** captured from the Fly-In Notes drawer (and auto-generated for any note missing a snapshot when the report opens)
   - Full export & copy support for **HTML (with embedded screenshots)**, **Markdown**, **JSON**, and **CSV**.
 
-### Feature #7: Pin / Dock to Top, Left, Right, or Beside Element (Like DOM Explorer)
-- Supports 4 docking modes persisted in `localStorage` (`ANDI_GEN1_DOCK`): **Dock: Top**, **Dock: Left**, **Dock: Right**, and **Dock: Beside Element**. Bottom docking was removed.
+### Feature #7: Pin / Dock to Top, Left, or Right (Like DOM Explorer)
+- Supports 3 docking modes persisted in `localStorage` (`ANDI_GEN1_DOCK`): **Dock: Top**, **Dock: Left**, and **Dock: Right**. Bottom docking and the floating "Beside Element" (DOM inline) dock were removed.
 - In **Dock: Top**, `syncTopDockOffset()` measures the bar's live height with a `ResizeObserver` and applies it as `document.body` `margin-top` plus `scroll-padding-top`, so top-level page elements remain visible without scrolling.
 
 ### Feature #8: High-Contrast WCAG AAA User Themes for Light and Dark Layouts

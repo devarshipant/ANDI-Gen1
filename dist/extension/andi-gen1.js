@@ -4792,7 +4792,7 @@ class AndiGen1Controller {
         this.theme = savedTheme;
       }
       const savedDock = window.localStorage.getItem(STORAGE_KEY_DOCK);
-      if (savedDock && ['top', 'left', 'right', 'dom'].includes(savedDock)) {
+      if (savedDock && ['top', 'left', 'right'].includes(savedDock)) {
         this.dock = savedDock;
       }
     } catch {
@@ -5062,7 +5062,6 @@ class AndiGen1Controller {
     rec.note = readElementNote(rec.element, rec.selector, this.activeFrameLabel);
     this.renderActiveElementInspection(rec);
     this.syncNoteDrawerForRecord(rec);
-    this.positionDomInlineDock(rec.element);
     this.drawLaserToElement(rec.element);
   }
 
@@ -5262,14 +5261,6 @@ class AndiGen1Controller {
       document.body.style.marginRight = '440px';
       this.hostEl.style.cssText =
         'position:fixed;top:0;bottom:0;right:0;width:440px;z-index:2147483646;';
-    } else if (this.dock === 'dom') {
-      const activeRec = this.records[this.activeIndex - 1];
-      if (activeRec) {
-        this.positionDomInlineDock(activeRec.element);
-      } else {
-        this.hostEl.style.cssText =
-          'position:fixed;bottom:16px;right:16px;width:580px;z-index:2147483646;';
-      }
     }
   }
 
@@ -5310,25 +5301,6 @@ class AndiGen1Controller {
   disconnectBarResize() {
     this.barResizeObserver?.disconnect();
     this.barResizeObserver = null;
-  }
-
-  positionDomInlineDock(targetEl) {
-    if (this.dock !== 'dom' || !this.hostEl) {
-      return;
-    }
-    let rect = targetEl.getBoundingClientRect();
-    if (this.steppedInIframe) {
-      const ifrRect = this.steppedInIframe.getBoundingClientRect();
-      rect = new DOMRect(
-        ifrRect.left + rect.left,
-        ifrRect.top + rect.top,
-        rect.width,
-        rect.height
-      );
-    }
-    const topPos = Math.min(Math.max(rect.bottom + 10, 12), window.innerHeight - 290);
-    const leftPos = Math.min(Math.max(rect.left, 12), Math.max(window.innerWidth - 600, 12));
-    this.hostEl.style.cssText = `position:fixed;top:${Math.round(topPos)}px;left:${Math.round(leftPos)}px;width:580px;z-index:2147483646;`;
   }
 
   resetBodyMargins() {
@@ -5449,8 +5421,7 @@ class AndiGen1Controller {
     const dockOptions = [
       { value: 'top', label: 'Dock: Top' },
       { value: 'left', label: 'Dock: Left' },
-      { value: 'right', label: 'Dock: Right' },
-      { value: 'dom', label: 'Dock: Beside Element' }
+      { value: 'right', label: 'Dock: Right' }
     ];
     dockOptions.forEach((d) => {
       const opt = document.createElement('option');
@@ -6814,7 +6785,7 @@ class AndiGen1Controller {
         box-shadow: 0 8px 28px rgba(2, 6, 23, 0.22);
       }
 
-      /* Dock Layouts (#7: Top / Left / Right / Beside Element) */
+      /* Dock Layouts (#7: Top / Left / Right) */
       .andi-bar[data-dock="left"],
       .andi-bar[data-dock="right"] {
         height: 100vh;
@@ -6832,11 +6803,6 @@ class AndiGen1Controller {
       .andi-bar[data-dock="left"] .andi-panel,
       .andi-bar[data-dock="right"] .andi-panel {
         max-height: 43vh;
-      }
-      .andi-bar[data-dock="dom"] {
-        border: 2.5px solid var(--accent);
-        border-radius: 10px;
-        overflow: hidden;
       }
 
       /* 3-Zone Ergonomic Top Command Bar */
