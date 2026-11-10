@@ -16,8 +16,8 @@ import { InspectedElementRecord } from './types';
 import { getBrowserEnvironmentInfo } from './notes-report';
 import { harnessRuntime } from './harness-runtime';
 
-const HARNESS_ANDI_VERSION = 'v31.3';
-const HARNESS_CDN_URL = 'https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@main/dist/andi-gen1.js';
+const HARNESS_ANDI_VERSION = '__ANDI_VERSION__';
+const HARNESS_CDN_URL = 'https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@__ANDI_VERSION__/dist/andi-gen1.js';
 const ANDI_PAGE_STYLE_ID = 'andi-gen1-page-highlights-css';
 const HARNESS_MAX_CONTEXT_CHARS = 30000;
 const HARNESS_MAX_CSS_CHARS = 250000;

@@ -39,14 +39,26 @@ ANDI (Accessible Name & Description Inspector) is an open-source accessibility t
 > [!IMPORTANT]
 > The bookmarklet loads from **jsDelivr**, which mirrors the public
 > `github.com/devarshipant/ANDI-Gen1` repository — **not** this one. Merging to
-> `ssa.ghe.com` alone will *not* update it, and the bookmarklet will keep serving an
-> older build. After merging here, also push the mirror and purge the CDN cache:
+> `ssa.ghe.com` alone will *not* update it.
+>
+> The URL is pinned to an immutable **tag** (`v31.4`) rather than `@main` on purpose.
+> jsDelivr caches a branch's name-to-commit lookup independently at each edge node, so
+> `@main` can serve a stale bundle to some users for up to 12 hours after a push while
+> serving the new one to others — and `?v='+Date.now()` does not help, because it defeats
+> the *browser* cache, not the CDN's branch resolution. A tag has no such ambiguity.
+>
+> To publish a release, bump `VERSION` / `VERSION_TAG` in `scripts/build.py`, rebuild,
+> commit, then push the mirror and the tag:
 >
 > ```powershell
 > git remote add public https://github.com/devarshipant/ANDI-Gen1.git  # once per clone
 > git push public main
-> Invoke-RestMethod 'https://purge.jsdelivr.net/gh/devarshipant/ANDI-Gen1@main/dist/andi-gen1.js'
+> git tag -f v31.4
+> git push -f public v31.4
 > ```
+>
+> Then verify the new bundle **from a browser**, not only from PowerShell — a corporate
+> proxy and a browser can route to different jsDelivr edges and disagree about the same URL.
 >
 > To validate a change *before* it reaches the mirror, use Option 2 or Option 3 instead —
 > the bookmarklet cannot test an unmerged branch.
@@ -54,8 +66,11 @@ ANDI (Accessible Name & Description Inspector) is an open-source accessibility t
 Create a new bookmark in your browser's Bookmarks Bar named **ANDI-Gen1** and paste the following URL:
 
 ```javascript
-javascript:(function(){window.ANDI_INITIAL_MODE='f';var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@main/dist/andi-gen1.js?v='+Date.now();document.head.appendChild(s);})();
+javascript:(function(){window.ANDI_INITIAL_MODE='f';var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@v31.4/dist/andi-gen1.js?v='+Date.now();document.head.appendChild(s);})();
 ```
+
+The loaded build identifies itself in the inspector's header badge as `v31.4 TS (<build date>)`,
+so you can always confirm which bundle is running.
 
 ### Option 2: Local Interactive Test Page (`demo.html`)
 

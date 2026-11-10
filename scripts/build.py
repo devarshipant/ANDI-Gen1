@@ -10,6 +10,7 @@ import re
 import struct
 import zipfile
 import zlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -17,6 +18,29 @@ SRC_DIR = ROOT / "src"
 ANDI_DIR = ROOT / "andi"
 DIST_DIR = ROOT / "dist"
 EXT_DIR = DIST_DIR / "extension"
+
+# Single source of truth for the version. Bump VERSION here, then tag the release
+# commit `git tag VERSION_TAG && git push public VERSION_TAG` so the bookmarklet's
+# pinned jsDelivr URL resolves.
+VERSION = "31.4.0"
+VERSION_TAG = "v31.4"
+
+# jsDelivr mirror the bookmarklet loads from. This is deliberately pinned to an
+# immutable tag rather than `@main`: jsDelivr caches a branch's name-to-commit
+# lookup independently at each edge node, so `@main` can serve a stale bundle to
+# some users for hours after a push while serving the new one to others.
+CDN_REPO = "devarshipant/ANDI-Gen1"
+
+
+def build_stamp() -> str:
+    """
+    Identifies the build. Deliberately a UTC date rather than a commit SHA: the SHA of the
+    commit that *contains* a build cannot be embedded in that build (embedding it changes
+    the commit). `VERSION_TAG` is the authoritative release identity; the date distinguishes
+    rebuilds of the same tag. ASCII only, so the label survives any response encoding.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
 
 MODULE_ORDER = [
     SRC_DIR / "csp-guard.ts",
@@ -243,8 +267,11 @@ def main() -> None:
         if legacy_file.exists():
             legacy_file.unlink()
 
+    stamp = build_stamp()
+    build_label = f"{VERSION_TAG} TS ({stamp})"
+
     bundle_parts = [
-        "/*! ANDI-Gen1 v31.3.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */",
+        f"/*! ANDI-Gen1 {VERSION_TAG}.0 ({stamp}) — Zero-Dependency TypeScript Rewrite (SSA ANDI) */",
         "(function() {",
         "  'use strict';",
     ]
@@ -252,6 +279,8 @@ def main() -> None:
     for path in MODULE_ORDER:
         raw = path.read_text(encoding="utf-8")
         transformed = strip_typescript(raw)
+        transformed = transformed.replace("__ANDI_BUILD_LABEL__", build_label)
+        transformed = transformed.replace("__ANDI_VERSION__", VERSION_TAG)
         rel_name = path.relative_to(ROOT)
         bundle_parts.append(f"\n  // === Module: {rel_name} ===")
         bundle_parts.append(transformed)
@@ -274,7 +303,7 @@ def main() -> None:
     manifest = {
         "manifest_version": 3,
         "name": "ANDI-Gen1 — Accessible Name & Description Inspector",
-        "version": "31.3.0",
+        "version": VERSION,
         "description": "TypeScript rewrite of SSA ANDI with DOM Node Navigation, Semantic Role Detection, Element Inventory Drawer, Notes & Screenshots.",
         "permissions": ["activeTab", "scripting"],
         "icons": {
@@ -314,14 +343,17 @@ def main() -> None:
         "javascript:(function(){"
         "window.ANDI_INITIAL_MODE='f';"
         "var s=document.createElement('script');"
-        "s.src='https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@main/dist/andi-gen1.js?v='+Date.now();"
+        f"s.src='https://cdn.jsdelivr.net/gh/{CDN_REPO}@{VERSION_TAG}/dist/andi-gen1.js?v='+Date.now();"
         "document.head.appendChild(s);"
         "})();"
     )
     (DIST_DIR / "bookmarklet.txt").write_text(bookmarklet, encoding="utf-8")
 
     print(f"Built {out_gen1_js} ({out_gen1_js.stat().st_size:,} bytes)")
+    print(f"Build label: {build_label}")
     print(f"Packaged Chrome Web Store zip: {zip_path} ({zip_path.stat().st_size:,} bytes)")
+    print(f"Bookmarklet pinned to {VERSION_TAG}. After committing this build, publish the tag:")
+    print(f"  git tag -f {VERSION_TAG} && git push -f public {VERSION_TAG}")
 
 
 if __name__ == "__main__":

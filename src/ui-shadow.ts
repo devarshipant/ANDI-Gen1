@@ -915,7 +915,9 @@ export class AndiGen1Controller {
     brandBadge.textContent = 'ANDI-Gen1';
     const versionSpan = document.createElement('span');
     versionSpan.className = 'andi-version';
-    versionSpan.textContent = 'v31.3 TS';
+    // Substituted by scripts/build.py with "<tag> TS · <short sha>" so the UI always
+    // reports the exact build that is loaded. Unsubstituted means an un-built source run.
+    versionSpan.textContent = '__ANDI_BUILD_LABEL__';
     brand.append(brandBadge, versionSpan);
 
     const moduleWrap = document.createElement('div');

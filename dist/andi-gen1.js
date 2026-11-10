@@ -1,4 +1,4 @@
-/*! ANDI-Gen1 v31.3.0 — Zero-Dependency TypeScript Rewrite (SSA ANDI) */
+/*! ANDI-Gen1 v31.4.0 (2026-11-10) — Zero-Dependency TypeScript Rewrite (SSA ANDI) */
 (function() {
   'use strict';
 
@@ -2723,8 +2723,8 @@ function harnessRuntime() {
  */
 
 
-const HARNESS_ANDI_VERSION = 'v31.3';
-const HARNESS_CDN_URL = 'https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@main/dist/andi-gen1.js';
+const HARNESS_ANDI_VERSION = 'v31.4';
+const HARNESS_CDN_URL = 'https://cdn.jsdelivr.net/gh/devarshipant/ANDI-Gen1@v31.4/dist/andi-gen1.js';
 const ANDI_PAGE_STYLE_ID = 'andi-gen1-page-highlights-css';
 const HARNESS_MAX_CONTEXT_CHARS = 30000;
 const HARNESS_MAX_CSS_CHARS = 250000;
@@ -5552,7 +5552,9 @@ class AndiGen1Controller {
     brandBadge.textContent = 'ANDI-Gen1';
     const versionSpan = document.createElement('span');
     versionSpan.className = 'andi-version';
-    versionSpan.textContent = 'v31.3 TS';
+    // Substituted by scripts/build.py with "<tag> TS · <short sha>" so the UI always
+    // reports the exact build that is loaded. Unsubstituted means an un-built source run.
+    versionSpan.textContent = 'v31.4 TS (2026-11-10)';
     brand.append(brandBadge, versionSpan);
 
     const moduleWrap = document.createElement('div');
