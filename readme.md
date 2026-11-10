@@ -35,6 +35,22 @@ ANDI (Accessible Name & Description Inspector) is an open-source accessibility t
 ## How do I install or run ANDI-Gen1?
 
 ### Option 1: Bookmarklet (Favelet)
+
+> [!IMPORTANT]
+> The bookmarklet loads from **jsDelivr**, which mirrors the public
+> `github.com/devarshipant/ANDI-Gen1` repository — **not** this one. Merging to
+> `ssa.ghe.com` alone will *not* update it, and the bookmarklet will keep serving an
+> older build. After merging here, also push the mirror and purge the CDN cache:
+>
+> ```powershell
+> git remote add public https://github.com/devarshipant/ANDI-Gen1.git  # once per clone
+> git push public main
+> Invoke-RestMethod 'https://purge.jsdelivr.net/gh/devarshipant/ANDI-Gen1@main/dist/andi-gen1.js'
+> ```
+>
+> To validate a change *before* it reaches the mirror, use Option 2 or Option 3 instead —
+> the bookmarklet cannot test an unmerged branch.
+
 Create a new bookmark in your browser's Bookmarks Bar named **ANDI-Gen1** and paste the following URL:
 
 ```javascript
@@ -42,8 +58,18 @@ javascript:(function(){window.ANDI_INITIAL_MODE='f';var s=document.createElement
 ```
 
 ### Option 2: Local Interactive Test Page (`demo.html`)
+
+`demo.html` loads `./dist/andi-gen1.js` by relative path, so **no web server is required** —
+open the file directly from disk and it picks up your latest local build:
+
+```
+file:///path/to/ANDI-Gen1/demo.html
+```
+
+If you would rather serve it over HTTP (for example to exercise CSP behaviour):
+
 ```bash
-python3 -m http.server 8090
+python -m http.server 8090
 ```
 Then open `http://localhost:8090/demo.html` in your browser.
 
