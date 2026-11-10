@@ -195,6 +195,7 @@ def strip_function_signatures(code: str) -> str:
         r":\s*Node",
         r":\s*Event",
         r":\s*MouseEvent",
+        r":\s*PointerEvent",
         r":\s*FocusEvent",
         r":\s*KeyboardEvent",
         r":\s*RgbColor",

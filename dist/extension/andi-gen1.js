@@ -4721,6 +4721,15 @@ function relativeLuminance(r8, g8, b8) {
 const PAGE_HIGHLIGHT_STYLE_ID = 'andi-gen1-page-highlights-css';
 const STORAGE_KEY_THEME = 'ANDI_GEN1_THEME';
 const STORAGE_KEY_DOCK = 'ANDI_GEN1_DOCK';
+const STORAGE_KEY_SIZE_TOP = 'ANDI_GEN1_SIZE_TOP';
+const STORAGE_KEY_SIZE_SIDE = 'ANDI_GEN1_SIZE_SIDE';
+
+// Resize limits for the user-draggable inspector edge.
+const DEFAULT_TOP_HEIGHT = 240;
+const MIN_TOP_HEIGHT = 90;
+const DEFAULT_SIDE_WIDTH = 440;
+const MIN_SIDE_WIDTH = 300;
+const RESIZE_KEYBOARD_STEP = 16;
 
 // Requirement: Move ALL mode as the last item in droplist
 const DROPLIST_MODES_ORDER = ['f', 'g', 'l', 't', 's', 'c', 'h', 'i', 'all'];
@@ -4748,6 +4757,12 @@ class AndiGen1Controller {
   // Theme & Dock settings
   theme = 'light';
   dock = 'top';
+
+  // User-adjustable inspector size (height when docked top, width when docked left/right).
+  // topHeight 0 means "auto" — the grid keeps its content-driven max-height until the
+  // tester actually drags the edge, so a sparse page still gets a compact inspector.
+  topHeight = 0;
+  sideWidth = DEFAULT_SIDE_WIDTH;
 
   // Iframe Step-In state
   activeDocument = document;
@@ -4794,6 +4809,14 @@ class AndiGen1Controller {
       const savedDock = window.localStorage.getItem(STORAGE_KEY_DOCK);
       if (savedDock && ['top', 'left', 'right'].includes(savedDock)) {
         this.dock = savedDock;
+      }
+      const savedTop = Number(window.localStorage.getItem(STORAGE_KEY_SIZE_TOP));
+      if (Number.isFinite(savedTop) && savedTop >= MIN_TOP_HEIGHT) {
+        this.topHeight = savedTop;
+      }
+      const savedSide = Number(window.localStorage.getItem(STORAGE_KEY_SIZE_SIDE));
+      if (Number.isFinite(savedSide) && savedSide >= MIN_SIDE_WIDTH) {
+        this.sideWidth = savedSide;
       }
     } catch {
       // Ignore storage errors
@@ -5250,18 +5273,196 @@ class AndiGen1Controller {
     this.hostEl.setAttribute('data-dock', this.dock);
 
     this.resetBodyMargins();
+    this.applyBarSize();
     if (this.dock === 'top') {
       this.hostEl.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483646;';
       this.syncTopDockOffset();
     } else if (this.dock === 'left') {
-      document.body.style.marginLeft = '440px';
+      document.body.style.marginLeft = `${this.sideWidth}px`;
       this.hostEl.style.cssText =
-        'position:fixed;top:0;bottom:0;left:0;width:440px;z-index:2147483646;';
+        `position:fixed;top:0;bottom:0;left:0;width:${this.sideWidth}px;z-index:2147483646;`;
     } else if (this.dock === 'right') {
-      document.body.style.marginRight = '440px';
+      document.body.style.marginRight = `${this.sideWidth}px`;
       this.hostEl.style.cssText =
-        'position:fixed;top:0;bottom:0;right:0;width:440px;z-index:2147483646;';
+        `position:fixed;top:0;bottom:0;right:0;width:${this.sideWidth}px;z-index:2147483646;`;
     }
+    this.syncResizeHandleState();
+  }
+
+  /**
+   * Applies the user's chosen size. Docked to the top the draggable dimension is the content
+   * grid's height (the header stays a fixed cost); docked to a side it is the host width.
+   */
+  applyBarSize() {
+    if (!this.gridEl) {
+      return;
+    }
+    if (this.dock === 'top' && this.topHeight > 0) {
+      this.topHeight = Math.min(Math.max(this.topHeight, MIN_TOP_HEIGHT), this.maxTopHeight());
+      this.gridEl.style.height = `${this.topHeight}px`;
+      this.gridEl.style.maxHeight = 'none';
+    } else {
+      this.gridEl.style.removeProperty('height');
+      this.gridEl.style.removeProperty('max-height');
+    }
+  }
+
+  /** Current grid height in px, whether it is user-set or still content-driven. */
+  currentTopHeight() {
+    if (this.topHeight > 0) {
+      return this.topHeight;
+    }
+    return this.gridEl ? Math.round(this.gridEl.getBoundingClientRect().height) : DEFAULT_TOP_HEIGHT;
+  }
+
+  maxTopHeight() {
+    return Math.max(MIN_TOP_HEIGHT, Math.round(window.innerHeight * 0.8));
+  }
+
+  maxSideWidth() {
+    return Math.max(MIN_SIDE_WIDTH, Math.round(window.innerWidth * 0.7));
+  }
+
+  /**
+   * Keeps the handle's orientation, help text and ARIA range in sync with the current dock.
+   */
+  syncResizeHandleState() {
+    if (!this.resizeHandleEl) {
+      return;
+    }
+    const isTop = this.dock === 'top';
+    const value = isTop ? this.currentTopHeight() : this.sideWidth;
+    const min = isTop ? MIN_TOP_HEIGHT : MIN_SIDE_WIDTH;
+    const max = isTop ? this.maxTopHeight() : this.maxSideWidth();
+    const dimension = isTop ? 'height' : 'width';
+    this.resizeHandleEl.setAttribute('aria-orientation', isTop ? 'horizontal' : 'vertical');
+    this.resizeHandleEl.setAttribute('aria-valuenow', String(Math.round(value)));
+    this.resizeHandleEl.setAttribute('aria-valuemin', String(min));
+    this.resizeHandleEl.setAttribute('aria-valuemax', String(max));
+    this.resizeHandleEl.setAttribute(
+      'aria-label',
+      `Resize ANDI-Gen1 ${dimension} — drag, or use arrow keys. Press Home to reset.`
+    );
+    this.resizeHandleEl.title = `Drag to change the inspector ${dimension} (arrow keys also work, Home resets)`;
+  }
+
+  persistBarSize() {
+    try {
+      window.localStorage.setItem(STORAGE_KEY_SIZE_TOP, String(Math.round(this.topHeight)));
+      window.localStorage.setItem(STORAGE_KEY_SIZE_SIDE, String(Math.round(this.sideWidth)));
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Resizes by `delta` CSS pixels along the current dock's axis, clamped to sane limits.
+   * The first adjustment converts the top dock from auto height to an explicit one.
+   */
+  resizeBarBy(delta) {
+    if (this.dock === 'top') {
+      this.topHeight = Math.min(
+        Math.max(this.currentTopHeight() + delta, MIN_TOP_HEIGHT),
+        this.maxTopHeight()
+      );
+    } else {
+      this.sideWidth = Math.min(
+        Math.max(this.sideWidth + delta, MIN_SIDE_WIDTH),
+        this.maxSideWidth()
+      );
+    }
+    this.applyDockAndTheme();
+  }
+
+  /** Restores the default: auto (content-driven) height on top, 440px on the sides. */
+  resetBarSize() {
+    if (this.dock === 'top') {
+      this.topHeight = 0;
+    } else {
+      this.sideWidth = DEFAULT_SIDE_WIDTH;
+    }
+    this.applyDockAndTheme();
+    this.persistBarSize();
+  }
+
+  /**
+   * Draggable + keyboard-operable edge used to shrink the inspector so more of the page
+   * under test stays visible. Exposed as a `separator` so it is reachable by keyboard and
+   * announced with its current size, matching the accessibility bar ANDI itself enforces.
+   */
+  buildResizeHandle() {
+    const handle = document.createElement('div');
+    handle.className = 'andi-resizer';
+    handle.setAttribute('role', 'separator');
+    handle.tabIndex = 0;
+    this.resizeHandleEl = handle;
+
+    let dragging = false;
+    let startPos = 0;
+    let startSize = 0;
+
+    const onPointerMove = (ev) => {
+      if (!dragging) {
+        return;
+      }
+      ev.preventDefault();
+      if (this.dock === 'top') {
+        this.topHeight = startSize + (ev.clientY - startPos);
+      } else if (this.dock === 'left') {
+        this.sideWidth = startSize + (ev.clientX - startPos);
+      } else {
+        this.sideWidth = startSize - (ev.clientX - startPos);
+      }
+      this.resizeBarBy(0);
+    };
+
+    const endDrag = (ev) => {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      handle.classList.remove('dragging');
+      handle.releasePointerCapture?.(ev.pointerId);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', endDrag);
+      this.persistBarSize();
+    };
+
+    handle.addEventListener('pointerdown', (ev) => {
+      dragging = true;
+      startPos = this.dock === 'top' ? ev.clientY : ev.clientX;
+      startSize = this.dock === 'top' ? this.currentTopHeight() : this.sideWidth;
+      handle.classList.add('dragging');
+      handle.setPointerCapture?.(ev.pointerId);
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', endDrag);
+      ev.preventDefault();
+    });
+
+    handle.addEventListener('keydown', (ev) => {
+      const isTop = this.dock === 'top';
+      let delta = 0;
+      if (ev.key === (isTop ? 'ArrowUp' : 'ArrowLeft')) {
+        delta = this.dock === 'right' ? RESIZE_KEYBOARD_STEP : -RESIZE_KEYBOARD_STEP;
+      } else if (ev.key === (isTop ? 'ArrowDown' : 'ArrowRight')) {
+        delta = this.dock === 'right' ? -RESIZE_KEYBOARD_STEP : RESIZE_KEYBOARD_STEP;
+      } else if (ev.key === 'Home') {
+        ev.preventDefault();
+        this.resetBarSize();
+        return;
+      } else {
+        return;
+      }
+      ev.preventDefault();
+      this.resizeBarBy(delta);
+      this.persistBarSize();
+    });
+
+    handle.addEventListener('dblclick', () => {
+      this.resetBarSize();
+    });
+
+    return handle;
   }
 
   /**
@@ -5279,6 +5480,9 @@ class AndiGen1Controller {
     document.body.style.marginTop = `${height}px`;
     // Keeps in-page anchor jumps and focus scrolling clear of the fixed inspector.
     document.documentElement.style.scrollPaddingTop = `${height}px`;
+    // While the height is still content-driven, the measurement is only trustworthy once
+    // layout has settled, so refresh the handle's reported value here too.
+    this.syncResizeHandleState();
     if (window.scrollY > 0 && window.scrollY <= height) {
       window.scrollTo(window.scrollX, 0);
     }
@@ -5474,13 +5678,16 @@ class AndiGen1Controller {
     this.srOutputEl = document.createElement('div');
     this.srOutputEl.className = 'sr-output';
 
-    // Requirement #3 (Part B): IDREF attributes (aria-labelledby, aria-describedby, headers, label[for]) with clickable target links
-    this.srIdRefsBarEl = document.createElement('div');
-    this.srIdRefsBarEl.className = 'sr-idrefs-bar';
+    // Unified element details: ARIA attributes, IDREF associations and computed
+    // properties in one deduplicated table, shown before the extracted code.
+    const detailsLabel = document.createElement('span');
+    detailsLabel.className = 'sr-sub-label';
+    detailsLabel.textContent = 'Element Details';
 
-    // Requirement #2: Semantic association bar (e.g. role="table" / role="grid" header associations)
-    this.srSemanticAssocBarEl = document.createElement('div');
-    this.srSemanticAssocBarEl.className = 'sr-semantic-bar';
+    const detailsTable = document.createElement('table');
+    detailsTable.className = 'comp-table';
+    this.detailsTbodyEl = document.createElement('tbody');
+    detailsTable.appendChild(this.detailsTbodyEl);
 
     // Extracted DOM code + copy action, rendered after the element's ARIA / IDREF details
     this.srDomNodeBarEl = document.createElement('div');
@@ -5489,20 +5696,15 @@ class AndiGen1Controller {
     srBox.append(
       srTitle,
       this.srOutputEl,
-      this.srIdRefsBarEl,
-      this.srSemanticAssocBarEl,
+      detailsLabel,
+      detailsTable,
       this.srDomNodeBarEl
     );
-
-    const compTable = document.createElement('table');
-    compTable.className = 'comp-table';
-    this.componentsTbodyEl = document.createElement('tbody');
-    compTable.appendChild(this.componentsTbodyEl);
 
     this.elementAlertsListEl = document.createElement('ul');
     this.elementAlertsListEl.className = 'alert-list';
 
-    colInspect.append(this.elementHeaderEl, srBox, compTable, this.elementAlertsListEl);
+    colInspect.append(this.elementHeaderEl, srBox, this.elementAlertsListEl);
 
     // Panel 2: Page Accessibility Alerts Panel — only rendered when alerts exist, so a
     // clean page gives Panel 1 the full width of the inspector.
@@ -5520,6 +5722,9 @@ class AndiGen1Controller {
     grid.append(colInspect, colAlerts);
     this.gridEl = grid;
     bar.appendChild(grid);
+
+    // Draggable edge so testers can shrink the inspector and see more of the page.
+    bar.appendChild(this.buildResizeHandle());
 
     // 3. On-Demand Fly-in Notes & All Saved Notes Drawer (#1, #2, #9)
     this.noteDrawerEl = this.buildFlyinNoteDrawer();
@@ -6040,108 +6245,7 @@ class AndiGen1Controller {
     domActions.append(copyDomBtn, domStatus);
     this.srDomNodeBarEl.append(domLabel, domCode, domActions);
 
-    // Requirement #3 (Part B): IDREF Attributes (aria-labelledby, aria-describedby, headers, label[for]) & Clickable Linked Targets
-    this.srIdRefsBarEl.textContent = '';
-    if (rec.idRefGroups.length > 0) {
-      this.srIdRefsBarEl.style.display = 'flex';
-      for (const group of rec.idRefGroups) {
-        const groupRow = document.createElement('div');
-        groupRow.className = 'sr-idref-group';
-
-        const attrBadge = document.createElement('code');
-        attrBadge.className = 'sr-idref-attr';
-        attrBadge.textContent = `${group.attribute}="${group.rawValue}"`;
-        groupRow.appendChild(attrBadge);
-
-        for (const item of group.items) {
-          if (item.exists && item.targetElement) {
-            const targetEl = item.targetElement;
-            const linkBtn = document.createElement('a');
-            linkBtn.href = `#${item.id}`;
-            linkBtn.className = 'sr-idref-target-link';
-            const previewTxt =
-              item.text.length > 42 ? `${item.text.slice(0, 39)}...` : item.text || '(empty)';
-            linkBtn.textContent = `#${item.id} → <${item.targetTag}> "${previewTxt}"`;
-            linkBtn.title = `Click to navigate to referenced DOM node ${item.targetSelector} (<${item.targetTag} id="${item.id}">)`;
-            linkBtn.addEventListener('click', (e) => {
-              e.preventDefault();
-              this.navigateToDomElement(targetEl);
-            });
-            groupRow.appendChild(linkBtn);
-          } else {
-            const missingBadge = document.createElement('span');
-            missingBadge.className = 'sr-idref-missing';
-            missingBadge.textContent = `#${item.id} — missing ID target`;
-            groupRow.appendChild(missingBadge);
-          }
-        }
-        this.srIdRefsBarEl.appendChild(groupRow);
-      }
-    } else {
-      this.srIdRefsBarEl.style.display = 'none';
-    }
-
-    // Requirement #2: Semantic Table / Role Association Bar inside Screen Reader Output
-    this.srSemanticAssocBarEl.textContent = '';
-    if (rec.tableAssociation) {
-      this.srSemanticAssocBarEl.style.display = 'flex';
-      const ta = rec.tableAssociation;
-      const assocText = document.createElement('span');
-      assocText.className = 'sr-semantic-badge';
-      const parts = [
-        `Semantic [${ta.tableRole}] association:`
-      ];
-      if (ta.tableName) {
-        parts.push(`Table "${ta.tableName}"`);
-      }
-      if (ta.rowIndex !== null && ta.colIndex !== null) {
-        parts.push(`Cell (Row ${ta.rowIndex}/${ta.rowCount}, Col ${ta.colIndex}/${ta.colCount})`);
-      } else {
-        parts.push(`Grid Size (${ta.rowCount} rows × ${ta.colCount} cols)`);
-      }
-      if (ta.columnHeaders.length > 0) {
-        parts.push(`Col Header(s): "${ta.columnHeaders.join(' | ')}"`);
-      }
-      if (ta.rowHeaders.length > 0) {
-        parts.push(`Row Header(s): "${ta.rowHeaders.join(' | ')}"`);
-      }
-      assocText.textContent = parts.join(' • ');
-      this.srSemanticAssocBarEl.appendChild(assocText);
-    } else {
-      this.srSemanticAssocBarEl.style.display = 'none';
-    }
-
-    // Components table
-    this.componentsTbodyEl.textContent = '';
-    const entries = Object.entries(rec.components).filter(
-      ([, val]) => val !== undefined && val !== ''
-    );
-    for (const [key, val] of entries) {
-      const tr = document.createElement('tr');
-      const th = document.createElement('th');
-      th.textContent = key;
-      const td = document.createElement('td');
-      td.textContent = String(val);
-      tr.append(th, td);
-      this.componentsTbodyEl.appendChild(tr);
-    }
-    for (const [propKey, propVal] of Object.entries(rec.addOnProps)) {
-      const tr = document.createElement('tr');
-      const th = document.createElement('th');
-      th.textContent = propKey;
-      const td = document.createElement('td');
-      td.textContent = propVal;
-      tr.append(th, td);
-      this.componentsTbodyEl.appendChild(tr);
-    }
-    if (this.componentsTbodyEl.children.length === 0) {
-      const tr = document.createElement('tr');
-      const td = document.createElement('td');
-      td.colSpan = 2;
-      td.textContent = 'No accessibility markup found on this element.';
-      tr.appendChild(td);
-      this.componentsTbodyEl.appendChild(tr);
-    }
+    this.renderElementDetails(rec);
 
     // Active element alerts
     this.elementAlertsListEl.textContent = '';
@@ -6155,6 +6259,152 @@ class AndiGen1Controller {
       txt.textContent = `[${alert.module}ANDI] ${alert.message}`;
       li.append(ball, txt);
       this.elementAlertsListEl.appendChild(li);
+    }
+  }
+
+  /**
+   * Renders every detail ANDI knows about the inspected element as ONE deduplicated table.
+   *
+   * Previously the same facts were split across three blocks that overlapped heavily: an IDREF
+   * bar and a semantic-association bar above the extracted code, plus a components table below
+   * it. An element with `aria-labelledby` was therefore listed twice, in two different formats
+   * and two different naming conventions (`ariaLabelledby` vs `aria-labelledby`). Here each
+   * attribute appears exactly once, in source-attribute order, and any attribute that resolves
+   * IDREFs shows its raw value together with clickable links to the referenced nodes.
+   */
+  renderElementDetails(rec) {
+    this.detailsTbodyEl.textContent = '';
+
+    const idRefByAttr = new Map();
+    for (const group of rec.idRefGroups) {
+      idRefByAttr.set(group.attribute, group);
+    }
+    const renderedIdRefAttrs = new Set();
+    const comps = rec.components;
+
+    // Ordered so the accessible-name sources come first, then description, then associations.
+    // `idRefAttr` marks the component whose value is already covered by an IDREF group, so the
+    // two are merged into a single row instead of being printed twice.
+    const detailRows = [
+      { key: 'ariaLabel', label: 'aria-label' },
+      { key: 'ariaLabelledby', label: 'aria-labelledby', idRefAttr: 'aria-labelledby' },
+      { key: 'nativeLabel', label: 'label', idRefAttr: 'label[for]' },
+      { key: 'alt', label: 'alt' },
+      { key: 'caption', label: 'caption' },
+      { key: 'legend', label: 'legend' },
+      { key: 'figcaption', label: 'figcaption' },
+      { key: 'value', label: 'value' },
+      { key: 'placeholder', label: 'placeholder' },
+      { key: 'title', label: 'title' },
+      { key: 'pseudoBefore', label: '::before' },
+      { key: 'innerText', label: 'text' },
+      { key: 'pseudoAfter', label: '::after' },
+      { key: 'subtreeSummary', label: 'subtree' },
+      { key: 'ariaDescribedby', label: 'aria-describedby', idRefAttr: 'aria-describedby' },
+      { key: 'ariaDescription', label: 'aria-description' },
+      { key: 'tableContext', label: 'table context' },
+      { key: 'tableColumnHeaders', label: 'column header(s)' },
+      { key: 'tableRowHeaders', label: 'row header(s)' }
+    ];
+
+    for (const row of detailRows) {
+      const value = comps[row.key];
+      const idRefAttr = row.idRefAttr;
+      const group = idRefAttr ? idRefByAttr.get(idRefAttr) : undefined;
+      if ((value === undefined || value === '') && !group) {
+        continue;
+      }
+      let label = row.label;
+      // Keeps the role that the old semantic bar reported (table / grid / treegrid).
+      if (row.key === 'tableContext' && rec.tableAssociation) {
+        label = `${rec.tableAssociation.tableRole} context`;
+      }
+      if (group && idRefAttr) {
+        renderedIdRefAttrs.add(idRefAttr);
+        this.appendIdRefDetailRow(label, group, value);
+      } else {
+        this.appendDetailRow(label, value || '');
+      }
+    }
+
+    // Remaining IDREF attributes that have no component counterpart (headers, aria-controls,
+    // aria-owns, aria-activedescendant, ...).
+    for (const group of rec.idRefGroups) {
+      if (!renderedIdRefAttrs.has(group.attribute)) {
+        this.appendIdRefDetailRow(group.attribute, group);
+      }
+    }
+
+    // Computed/measured properties (contrast, aria-expanded, ...).
+    for (const [propKey, propVal] of Object.entries(rec.addOnProps)) {
+      this.appendDetailRow(propKey, propVal);
+    }
+
+    if (this.detailsTbodyEl.children.length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 2;
+      td.textContent = 'No accessibility markup found on this element.';
+      tr.appendChild(td);
+      this.detailsTbodyEl.appendChild(tr);
+    }
+  }
+
+  appendDetailRow(label, value) {
+    const tr = document.createElement('tr');
+    const th = document.createElement('th');
+    th.scope = 'row';
+    th.textContent = label;
+    const td = document.createElement('td');
+    td.textContent = value;
+    tr.append(th, td);
+    this.detailsTbodyEl.appendChild(tr);
+    return td;
+  }
+
+  /**
+   * One row for an IDREF attribute: the literal attribute value plus a clickable link per
+   * referenced node, so the raw markup and what it actually resolves to stay together.
+   */
+  appendIdRefDetailRow(
+    label,
+    group,
+    resolvedValue
+  ) {
+    const td = this.appendDetailRow(label, '');
+
+    const rawBadge = document.createElement('code');
+    rawBadge.className = 'detail-raw';
+    rawBadge.textContent = `="${group.rawValue}"`;
+    td.appendChild(rawBadge);
+
+    if (resolvedValue && resolvedValue !== '"" (empty/unresolved)') {
+      const resolvedText = document.createElement('span');
+      resolvedText.className = 'detail-resolved';
+      resolvedText.textContent = resolvedValue;
+      td.appendChild(resolvedText);
+    }
+
+    for (const item of group.items) {
+      if (item.exists && item.targetElement) {
+        const targetEl = item.targetElement;
+        const link = document.createElement('a');
+        link.href = `#${item.id}`;
+        link.className = 'sr-idref-target-link';
+        const preview = item.text.length > 42 ? `${item.text.slice(0, 39)}...` : item.text || '(empty)';
+        link.textContent = `#${item.id} → <${item.targetTag}> "${preview}"`;
+        link.title = `Click to navigate to referenced DOM node ${item.targetSelector} (<${item.targetTag} id="${item.id}">)`;
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          this.navigateToDomElement(targetEl);
+        });
+        td.appendChild(link);
+      } else {
+        const missing = document.createElement('span');
+        missing.className = 'sr-idref-missing';
+        missing.textContent = `#${item.id} — missing ID target`;
+        td.appendChild(missing);
+      }
     }
   }
 
@@ -6206,11 +6456,7 @@ class AndiGen1Controller {
     this.elementHeaderEl.textContent = 'No inspectable elements found for this mode.';
     this.srOutputEl.textContent = '—';
     this.srDomNodeBarEl.textContent = '';
-    this.srIdRefsBarEl.textContent = '';
-    this.srIdRefsBarEl.style.display = 'none';
-    this.srSemanticAssocBarEl.textContent = '';
-    this.srSemanticAssocBarEl.style.display = 'none';
-    this.componentsTbodyEl.textContent = '';
+    this.detailsTbodyEl.textContent = '';
     this.elementAlertsListEl.textContent = '';
   }
 
@@ -6770,6 +7016,64 @@ class AndiGen1Controller {
         position: relative;
       }
 
+      /* Draggable / keyboard-operable resize edge (shrink the inspector to reveal more page) */
+      .andi-resizer {
+        position: absolute;
+        background: transparent;
+        z-index: 5;
+        touch-action: none;
+      }
+      .andi-resizer::after {
+        content: '';
+        position: absolute;
+        background: var(--border-color);
+        border-radius: 999px;
+        opacity: 0.55;
+      }
+      .andi-bar[data-dock="top"] .andi-resizer {
+        left: 0;
+        right: 0;
+        bottom: -3px;
+        height: 11px;
+        cursor: ns-resize;
+      }
+      .andi-bar[data-dock="top"] .andi-resizer::after {
+        left: 50%;
+        transform: translateX(-50%);
+        top: 4px;
+        width: 64px;
+        height: 4px;
+      }
+      .andi-bar[data-dock="left"] .andi-resizer,
+      .andi-bar[data-dock="right"] .andi-resizer {
+        top: 0;
+        bottom: 0;
+        width: 11px;
+        cursor: ew-resize;
+      }
+      .andi-bar[data-dock="left"] .andi-resizer {
+        right: -3px;
+      }
+      .andi-bar[data-dock="right"] .andi-resizer {
+        left: -3px;
+      }
+      .andi-bar[data-dock="left"] .andi-resizer::after,
+      .andi-bar[data-dock="right"] .andi-resizer::after {
+        top: 50%;
+        transform: translateY(-50%);
+        left: 4px;
+        width: 4px;
+        height: 64px;
+      }
+      .andi-resizer:hover::after, .andi-resizer.dragging::after {
+        opacity: 1;
+        background: var(--accent);
+      }
+      .andi-resizer:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: -1px;
+      }
+
       /* High-Contrast Light Theme (Default — WCAG AAA 14:1+ text contrast) */
       .andi-bar[data-theme="light"] {
         --bg-main: #e2e8f0;
@@ -7057,32 +7361,10 @@ class AndiGen1Controller {
         margin-top: 4px;
       }
 
-      /* Requirement #3 (Part B): IDREF Attributes & Linked Items in Screen Reader Output */
-      .sr-idrefs-bar {
-        display: none;
-        flex-direction: column;
-        gap: 4px;
-        margin-top: 5px;
-        padding-top: 5px;
-        border-top: 1px dashed var(--border-color);
-      }
-      .sr-idref-group {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 6px;
-      }
-      .sr-idref-attr {
-        background: #312e81;
-        color: #ffffff;
-        border: 1px solid #a5b4fc;
-        border-radius: 4px;
-        padding: 3px 8px;
-        font-size: 12.5px;
-        font-weight: 800;
-      }
+      /* IDREF target links inside the merged Element Details table */
       .sr-idref-target-link {
-        display: inline-flex;
+        display: inline-block;
+        margin: 2px 6px 2px 0;
         align-items: center;
         background: #0c4a6e;
         color: #ffffff;
@@ -7099,7 +7381,8 @@ class AndiGen1Controller {
         background: #0369a1;
       }
       .sr-idref-missing {
-        display: inline-flex;
+        display: inline-block;
+        margin: 2px 6px 2px 0;
         align-items: center;
         background: #7f1d1d;
         color: #ffffff;
@@ -7110,25 +7393,6 @@ class AndiGen1Controller {
         font-weight: 800;
       }
 
-      /* Requirement #2: Semantic Table / Role Association Bar */
-      .sr-semantic-bar {
-        display: none;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin-top: 5px;
-        padding-top: 5px;
-        border-top: 1px dashed var(--border-color);
-      }
-      .sr-semantic-badge {
-        background: #064e3b;
-        color: #ffffff;
-        border: 1px solid #6ee7b7;
-        border-radius: 4px;
-        padding: 3px 9px;
-        font-size: 12.5px;
-        font-weight: 800;
-      }
 
       /* Requirement #3 (Part A): Element Inventory Fly-In Drawer */
       .flyin-inventory-drawer {
@@ -7189,11 +7453,29 @@ class AndiGen1Controller {
         border-bottom: 1px solid var(--border-color);
         padding: 4px 6px;
         text-align: left;
+        vertical-align: top;
       }
       .comp-table th {
         color: var(--accent);
         font-weight: 800;
         width: 30%;
+        font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+        white-space: nowrap;
+      }
+      /* Merged detail rows: literal attribute value, resolved text, then IDREF target links.
+         Inline-block keeps the table's two-column alignment intact while letting the
+         badges and links wrap inside the value cell. */
+      .detail-raw {
+        display: inline-block;
+        font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+        font-size: 12.5px;
+        color: var(--text-dim);
+        margin-right: 6px;
+      }
+      .detail-resolved {
+        display: inline-block;
+        font-weight: 700;
+        margin-right: 6px;
       }
 
       /* Fly-in Notes & All Saved Notes Drawer */

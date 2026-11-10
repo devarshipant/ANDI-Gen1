@@ -38,6 +38,9 @@ This document catalogs the architectural enhancements, feature updates, usabilit
 ### Feature #7: Pin / Dock to Top, Left, or Right (Like DOM Explorer)
 - Supports 3 docking modes persisted in `localStorage` (`ANDI_GEN1_DOCK`): **Dock: Top**, **Dock: Left**, and **Dock: Right**. Bottom docking and the floating "Beside Element" (DOM inline) dock were removed.
 - In **Dock: Top**, `syncTopDockOffset()` measures the bar's live height with a `ResizeObserver` and applies it as `document.body` `margin-top` plus `scroll-padding-top`, so top-level page elements remain visible without scrolling.
+- **The inspector is user-resizable** so testers can give more of the screen back to the page under test. A resize edge sits on the inspector's inner boundary and adjusts the **grid height** when docked top and the **host width** when docked left/right, clamped to `90px`–`80vh` and `300px`–`70vw` respectively. Sizes persist in `localStorage` (`ANDI_GEN1_SIZE_TOP`, `ANDI_GEN1_SIZE_SIDE`).
+  - Because ANDI-Gen1 is itself an accessibility tool, the handle is a real `role="separator"` with `aria-orientation` / `aria-valuenow` / `aria-valuemin` / `aria-valuemax`: it is focusable, resizes with arrow keys, and resets with `Home` or a double-click. Pointer dragging uses pointer capture.
+  - The top dock stays **content-sized until the tester actually resizes it** (`topHeight === 0` means auto), so a clean page with no alerts still yields a compact bar rather than reserving a fixed height.
 
 ### Feature #8: High-Contrast WCAG AAA User Themes for Light and Dark Layouts
 - **Light is the default theme**; both themes exceed **WCAG AAA (7:1 to 20.1:1)** contrast ratios:
@@ -48,7 +51,8 @@ This document catalogs the architectural enhancements, feature updates, usabilit
 - In the Fly-In Notes drawer, clicking **Save Note + Screenshot** renders a high-DPI HTML5 Canvas PNG card burning in the element's visual box, `<tag>`, selector, **exact DOM coordinates (`x, y, pageX, pageY, width × height`)**, **Browser/OS**, **timestamp**, ANDI alert status, and the tester's note.
 
 ### Feature #10: Element Details, Extracted Code & Copy DOM Code in the Screen Reader Output
-- Inside the **Screen Reader Spoken Output** box the content is ordered for analysis: the spoken preview, then the element's **ARIA attribute / IDREF association details**, then the **Extracted Code** snippet ([`extractDomNodeSnippet()`](./src/dom-index.ts)) with its **`Copy DOM Code`** button last.
+- Inside the **Screen Reader Spoken Output** box the content is ordered for analysis: the spoken preview, then a single **Element Details** table, then the **Extracted Code** snippet ([`extractDomNodeSnippet()`](./src/dom-index.ts)) with its **`Copy DOM Code`** button last.
+- **Element Details is deduplicated.** One table replaces what used to be three overlapping displays (an IDREF bar, a semantic-association bar, and a separate components table). Each attribute gets exactly one row showing its raw value, the resolved accessible text, and clickable jump links for every referenced ID (missing IDs are flagged inline) — previously `aria-labelledby` and friends were rendered twice, in two different formats and two naming conventions. Rows are ordered accessible-name sources → description → table/grid associations → computed add-ons (contrast, state).
   - **`Copy DOM Code`** — copies the element's complete, pretty-printed HTML with all ANDI markers (`data-andi*`) and `<script>` tags removed ([`getCleanDomCode()`](./src/test-harness.ts)). Typed input values, checked states and selected options are frozen into attributes.
   - The redundant **`Copy Test Harness`** / **`Download Test Harness`** controls were removed from the UI.
 - Element-to-element navigation is still available where it is the task: IDREF links in the spoken output and `Navigate` in the Inventory drawer.
