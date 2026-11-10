@@ -23,8 +23,8 @@ This document catalogs the architectural enhancements, feature updates, usabilit
 ### Feature #4: Move `ALL` Mode to the Last Item in the Mode Droplist
 - Reordered `DROPLIST_MODES_ORDER` to `['f', 'g', 'l', 't', 's', 'c', 'h', 'i', 'all']` so **`ALL — Run All Accessibility Tests` is the last option** in the mode droplist.
 
-### Feature #5: Built-In Content Security Policy (CSP) Detection & Resolution
-- [`CspGuard`](./src/csp-guard.ts) listens for real-time `SecurityPolicyViolationEvent`s, scans `<meta http-equiv="Content-Security-Policy">` tags, injects styles via **Constructable Stylesheets (`adoptedStyleSheets`)** to bypass `style-src` inline blocks, and offers one-click **Neutralize Meta CSP Rules** / **Restore Original Meta CSP** actions.
+### Feature #5: CSP-Safe Style Injection
+- [`CspGuard`](./src/csp-guard.ts) injects the Shadow DOM styles via **Constructable Stylesheets (`adoptedStyleSheets`)** so ANDI-Gen1 renders correctly on pages whose Content Security Policy blocks inline `style-src`. The user-facing CSP inspection/neutralization modal was removed; the guard now runs transparently.
 
 ### Feature #6: Defect Report Scoped to ANDI-Detected Defects + Tester Notes with Coordinates, Browser, Time & Screenshots
 - **Strict Defect + Note Filtering**: `buildDefectReport()` only includes elements that have **ANDI-detected accessibility defects (`rec.alerts.length > 0`) PLUS any elements with tester notes (`rec.note !== null`)**.
@@ -35,23 +35,23 @@ This document catalogs the architectural enhancements, feature updates, usabilit
   - **Embedded Annotated PNG Screenshots (`<img>`)** captured from the Fly-In Notes drawer (and auto-generated for any note missing a snapshot when the report opens)
   - Full export & copy support for **HTML (with embedded screenshots)**, **Markdown**, **JSON**, and **CSV**.
 
-### Feature #7: Pin / Dock to Left, Right, Top, Bottom, or DOM Inline (Like DOM Explorer)
-- Supports 5 docking modes persisted in `localStorage` (`ANDI_GEN1_DOCK`): **📌 Dock: Top**, **📌 Dock: Bottom**, **📌 Dock: Left Explorer**, **📌 Dock: Right Explorer**, and **📌 Dock: DOM Inline**.
+### Feature #7: Pin / Dock to Top, Left, Right, or Beside Element (Like DOM Explorer)
+- Supports 4 docking modes persisted in `localStorage` (`ANDI_GEN1_DOCK`): **Dock: Top**, **Dock: Left**, **Dock: Right**, and **Dock: Beside Element**. Bottom docking was removed.
+- In **Dock: Top**, `syncTopDockOffset()` measures the bar's live height with a `ResizeObserver` and applies it as `document.body` `margin-top` plus `scroll-padding-top`, so top-level page elements remain visible without scrolling.
 
-### Feature #8: High-Contrast WCAG AAA User Themes for Dark and Light Layouts
-- Upgraded both **🌙 Dark** and **☀️ Light** themes to exceed **WCAG AAA (7:1 to 20.1:1)** contrast ratios:
+### Feature #8: High-Contrast WCAG AAA User Themes for Light and Dark Layouts
+- **Light is the default theme**; both themes exceed **WCAG AAA (7:1 to 20.1:1)** contrast ratios:
+  - **Light Theme (default)**: Ink black `#020617` (`20.1:1`) and deep slate `#1e293b` (`14.2:1`) text on `#ffffff` / `#f8fafc` surfaces, with `#0c4a6e` (`9.9:1`) accents and `#334155` (`10.3:1`) high-visibility borders.
   - **Dark Theme**: Pure white `#ffffff` (`17.4:1`) and crisp slate `#e2e8f0` (`14.6:1`) text on deep `#020617` / `#0f172a` surfaces, with `#7dd3fc` (`11.4:1`) accents and `#fef08a`-on-`#020617` (`17.8:1`) warning badges.
-  - **Light Theme**: Ink black `#020617` (`20.1:1`) and deep slate `#1e293b` (`14.2:1`) text on `#ffffff` / `#f8fafc` surfaces, with `#0c4a6e` (`9.9:1`) accents and `#334155` (`10.3:1`) high-visibility borders.
 
 ### Feature #9: DOM Node Screenshot with Tester Note, Coordinates & Browser Metadata
-- In the Fly-In Notes drawer, clicking **📸 Save Note + Screenshot** renders a high-DPI HTML5 Canvas PNG card burning in the element's visual box, `<tag>`, selector, **exact DOM coordinates (`x, y, pageX, pageY, width × height`)**, **Browser/OS**, **timestamp**, ANDI alert status, and the tester's note.
+- In the Fly-In Notes drawer, clicking **Save Note + Screenshot** renders a high-DPI HTML5 Canvas PNG card burning in the element's visual box, `<tag>`, selector, **exact DOM coordinates (`x, y, pageX, pageY, width × height`)**, **Browser/OS**, **timestamp**, ANDI alert status, and the tester's note.
 
-### Feature #10: Extracted DOM Node in Screen Reader Output — Copy DOM Code & Local Test Harness
-- Directly below the spoken preview inside the **Screen Reader Spoken Output** box, ANDI-Gen1 displays the **Extracted DOM Node** (`🧬`) for the inspected element (a short snippet from [`extractDomNodeSnippet()`](./src/dom-index.ts)) with three actions (the earlier click-to-navigate action was replaced):
-  - **`📋 Copy DOM Code`** — copies the element's complete, pretty-printed HTML with all ANDI markers (`data-andi*`) and `<script>` tags removed ([`getCleanDomCode()`](./src/test-harness.ts)). Typed input values, checked states and selected options are frozen into attributes.
-  - **`🧪 Copy Test Harness`** / **`⬇ Download Test Harness`** — produce a standalone `.html` file ([`buildTestHarnessHtml()`](./src/test-harness.ts)) containing: the element's nearest structural context (table, list, fieldset, select, dialog, label…); a shell of its ancestors (tag + attributes only, so landmarks, forms and descendant CSS selectors still apply); every element it references by IDREF (`aria-labelledby`, `aria-describedby`, `headers`, `label[for]`, `aria-controls`, …); the stylesheet rules that match those elements; and the metadata ANDI captured (mode, selector, spoken output, alerts, browser, time).
-  - The harness runtime ([`harnessRuntime()`](./src/harness-runtime.ts)) attaches the handlers needed to test it locally and logs everything in a shadow-DOM panel: click/key/focus/input/submit/toggle events; `aria-expanded`/`aria-pressed`/`aria-checked`/`aria-selected` state changes; tab, radio, option, slider and arrow-key behaviour; native `<dialog>` and `role="dialog"`/`alertdialog` open/close with focus trap, Esc and focus return; live-region announcement buttons; recorded `alert`/`confirm`/`prompt`; blocked external navigation and form submission; auto-stubbed page functions referenced by inline handlers (`onclick="save()"`); and a button that launches ANDI-Gen1 on the harness itself.
-- Element-to-element navigation is still available where it is the task: IDREF links in the spoken output and `🎯 Navigate` in the Inventory drawer.
+### Feature #10: Element Details, Extracted Code & Copy DOM Code in the Screen Reader Output
+- Inside the **Screen Reader Spoken Output** box the content is ordered for analysis: the spoken preview, then the element's **ARIA attribute / IDREF association details**, then the **Extracted Code** snippet ([`extractDomNodeSnippet()`](./src/dom-index.ts)) with its **`Copy DOM Code`** button last.
+  - **`Copy DOM Code`** — copies the element's complete, pretty-printed HTML with all ANDI markers (`data-andi*`) and `<script>` tags removed ([`getCleanDomCode()`](./src/test-harness.ts)). Typed input values, checked states and selected options are frozen into attributes.
+  - The redundant **`Copy Test Harness`** / **`Download Test Harness`** controls were removed from the UI.
+- Element-to-element navigation is still available where it is the task: IDREF links in the spoken output and `Navigate` in the Inventory drawer.
 
 ### Feature #13: Mode-Scoped Inventory, Accurate Module Label, Frame Pill Only When Useful
 - **Inventory reflects the selected ANDI mode.** [`buildPageInventory()`](./src/analyzers.ts) now takes the mode: in `f/g/l/t/s/c/h/i` only elements that module inspects are listed (table cells are summarised by their table; elements with no semantic category appear under **Other**, which is how `cANDI` lists text with its contrast ratio); `ALL` lists every categorized visible element. Category pills with zero items are hidden and the drawer title names the mode.
@@ -75,13 +75,14 @@ This document catalogs the architectural enhancements, feature updates, usabilit
 ## 2. Usability Analysis & 3-Zone Ergonomic Workflow Redesign
 
 ### Usability Problems Identified & Resolved
-1. **Unactionable `Notes (x)` Pill & Missing All-Notes View**: Previously, `Notes: x` was a static `<span>` and the drawer only showed the current element's note. Fixed by turning **`📝 Notes (x)`** into an actionable button that opens the drawer and lists **all saved notes on the page** with one-click **`🎯 Inspect Node`** jump buttons and thumbnail previews.
-2. **Redundant `+Add Note` and `Note` Buttons**: Previously, a global `📝 Note` button in the right toolbar competed with `+ Add Note` in the element header. Fixed by removing the duplicate toolbar button so **`📝 Notes (x)`** in the telemetry bar manages all notes while a single **`📝 Note`** button in the element header edits the active element.
-3. **Disconnected `◀ Prev` / `Next ▶` Controls**: Previously, `Prev` and `Next` were far away on the right side of the top bar while the `#1 of 8 <input>` badge was on the left of Panel 1. Fixed by moving **`◀ Prev` · `#1 of 8` · `Next ▶`** directly into the **Active Element Navigator Bar** at the top of Panel 1 alongside the element's tag, exact coordinates `📍 (x, y) w×h`, and contextual `📝 Note` button.
+1. **Unactionable `Notes (x)` Pill & Missing All-Notes View**: Previously, `Notes: x` was a static `<span>` and the drawer only showed the current element's note. Fixed by turning **`Notes (x)`** into an actionable button that opens the drawer and lists **all saved notes on the page** with one-click **`Inspect Node`** jump buttons and thumbnail previews.
+2. **Redundant `+Add Note` and `Note` Buttons**: Previously, a global `Note` button in the right toolbar competed with `+ Add Note` in the element header. Fixed by removing the duplicate toolbar button so **`Notes (x)`** in the telemetry bar manages all notes while a single **`Note`** button in the element header edits the active element.
+3. **Disconnected `◀ Prev` / `Next ▶` Controls**: Previously, `Prev` and `Next` were far away on the right side of the top bar while the `#1 of 8 <input>` badge was on the left of Panel 1. Fixed by moving **`◀ Prev` · `#1 of 8` · `Next ▶`** directly into the **Active Element Navigator Bar** at the top of Panel 1 alongside the element's tag, exact coordinates `(x, y) w×h`, and contextual `Note` button.
 4. **3-Zone Top Command Bar**:
    - **Zone 1 (Scope & Frame)**: Brand + Mode Selector (`ALL` last) + Iframe Step-In/Out.
-   - **Zone 2 (Live Audit Telemetry & Triage)**: `Elements: N` + `Alerts: N` + Actionable **`📝 Notes (N)`** + Actionable **`📋 Defect Report (N)`**.
-   - **Zone 3 (Workspace Chrome)**: `🛡️ CSP` + `📌 Dock` + `☀️/🌙 Theme` + `✕ Close`.
+   - **Zone 2 (Live Audit Telemetry & Triage)**: `Elements: N` + `Alerts: N` + Actionable **`Notes (N)`** + Actionable **`Defect Report (N)`**.
+   - **Zone 3 (Workspace Chrome)**: `Dock` + `Theme` + `✕ Close`.
+5. **Jarring Iconography & Small Text**: Emoji icons across the toolbar, pills, drawers and modals rendered inconsistently across platforms and the 11–13px type was hard to read. Fixed by removing decorative emoji in favour of plain text labels (keeping only unambiguous glyphs `◀ ▶ ↪ ↩ ✕ ✓ ⚠ ▲ ·`) and raising the base font size to `14.5px / 1.5`.
 
 ---
 
